@@ -6,8 +6,10 @@ import streamlit as st
 
 try:
     from pykrx import stock
-except Exception:
+    PYKRX_IMPORT_ERROR = None
+except Exception as e:
     stock = None
+    PYKRX_IMPORT_ERROR = repr(e)
 
 st.set_page_config(
     page_title="SUNGHO Scanner",
@@ -178,7 +180,8 @@ st.title("📈 SUNGHO Scanner")
 st.caption("iPhone용 한국주식 단타·스윙 후보 스캐너")
 
 if stock is None:
-    st.error("서버에 pykrx 설치가 필요합니다.")
+    st.error("pykrx 로딩 실패: " + str(PYKRX_IMPORT_ERROR))
+    st.info("배포 환경에서 pykrx를 불러오지 못했습니다. 아래 오류 내용을 확인하세요.")
     st.stop()
 
 with st.expander("⚙️ 스캔 설정", expanded=False):
