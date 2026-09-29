@@ -1,4 +1,5 @@
 streamlit>=1.36
 pandas>=2.0
 numpy>=1.24
-pykrx>=1.0.48
+pykrx==1.2.9
+setuptools>=75
