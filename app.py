@@ -1,4 +1,3 @@
-
 import datetime as dt
 import numpy as np
 import pandas as pd
@@ -150,8 +149,25 @@ def analyze(t, nm, d):
         "체크":" · ".join(why[:6])
     }
 
+def latest_krx_day(markets, lookback_days=10):
+    # KRX daily datasets can be empty during the Korean trading session or before
+    # the daily snapshot is finalized. Walk backward to the newest usable day.
+    d=business_day()
+    for _ in range(lookback_days):
+        if d.weekday() < 5:
+            for m in markets:
+                cp=caps(ymd(d),m)
+                ts=tickers(m,ymd(d))
+                if not cp.empty and ts:
+                    return d
+        d -= dt.timedelta(days=1)
+    return None
+
 def run_scan(markets, per_market, min_value, min_score):
-    end=business_day(); start=end-dt.timedelta(days=150)
+    end=latest_krx_day(markets)
+    if end is None:
+        raise RuntimeError("최근 10일 내 사용 가능한 KRX 일별 데이터를 찾지 못했습니다.")
+    start=end-dt.timedelta(days=150)
     universe=[]
     for m in markets:
         cp=caps(ymd(end),m); ts=tickers(m,ymd(end))
@@ -162,6 +178,10 @@ def run_scan(markets, per_market, min_value, min_score):
             allowed=set(ts); ts=[t for t in cp["ticker"].tolist() if t in allowed]
         universe += [(m,t) for t in ts[:per_market]]
 
+    if not universe:
+        raise RuntimeError(f"{end:%Y-%m-%d} 기준 종목 목록이 비어 있습니다. KRX 응답을 확인하세요.")
+
+    st.caption(f"📅 스캔 기준일: {end:%Y-%m-%d} (가장 최근 사용 가능한 KRX 일별 데이터)")
     bar=st.progress(0,"종목 스캔 중...")
     out=[]
     for i,(m,t) in enumerate(universe,1):
@@ -199,7 +219,7 @@ if st.button("🚀 지금 스캔",type="primary",use_container_width=True):
             result = run_scan(markets, per_market, min_value_eok*100_000_000, min_score)
             st.session_state.scan = result
             if result.empty:
-                status.warning("⚠️ 조건에 맞는 후보가 없거나 KRX 데이터 응답이 비어 있습니다. 거래대금/점수를 낮춰 다시 시도하세요.")
+                status.warning("⚠️ 스캔은 정상 완료됐지만 현재 조건을 통과한 후보가 없습니다. 최소 점수나 거래대금을 낮춰보세요.")
             else:
                 status.success(f"✅ 스캔 완료: {len(result)}개 후보")
         except Exception as e:
