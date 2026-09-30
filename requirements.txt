@@ -4,6 +4,6 @@ pandas>=2.0
 
 numpy>=1.24
 
-FinanceDataReader
+finance-datareader
 
 setuptools>=75
