@@ -4,9 +4,9 @@ import pandas as pd
 import streamlit as st
 
 try:
-    from pykrx import stock
+    import FinanceDataReader as fdr
 except Exception:
-    stock = None
+    fdr = None
 
 st.set_page_config(
     page_title="SUNGHO Scanner",
@@ -71,25 +71,35 @@ def atr(df, period=14):
     ], axis=1).max(axis=1)
     return tr.rolling(period).mean()
 
-@st.cache_data(ttl=900, show_spinner=False)
-def tickers(market, date):
-    try: return stock.get_market_ticker_list(date, market=market)
-    except: return []
+@st.cache_data(ttl=3600, show_spinner=False)
+def listing():
+    if fdr is None:
+        return pd.DataFrame()
+    try:
+        df=fdr.StockListing("KRX").copy()
+        if "Code" not in df.columns and "Symbol" in df.columns:
+            df=df.rename(columns={"Symbol":"Code"})
+        if "Name" not in df.columns and "Name" not in df:
+            return pd.DataFrame()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-@st.cache_data(ttl=900, show_spinner=False)
-def name(t):
-    try: return stock.get_market_ticker_name(t)
-    except: return t
-
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def prices(t, start, end):
-    try: return stock.get_market_ohlcv_by_date(start, end, t).copy()
-    except: return pd.DataFrame()
+    if fdr is None:
+        return pd.DataFrame()
+    try:
+        d=fdr.DataReader(str(t), start, end).copy()
+        if d.empty: return d
+        ren={"Open":"시가","High":"고가","Low":"저가","Close":"종가","Volume":"거래량","Change":"등락률"}
+        d=d.rename(columns=ren)
+        if "거래대금" not in d.columns:
+            d["거래대금"]=d["종가"]*d["거래량"]
+        return d
+    except Exception:
+        return pd.DataFrame()
 
-@st.cache_data(ttl=900, show_spinner=False)
-def caps(date, market):
-    try: return stock.get_market_cap_by_ticker(date, market=market)
-    except: return pd.DataFrame()
 
 def analyze(t, nm, d):
     if len(d) < 65: return None
@@ -149,46 +159,49 @@ def analyze(t, nm, d):
         "체크":" · ".join(why[:6])
     }
 
-def latest_krx_day(markets, lookback_days=10):
-    # KRX daily datasets can be empty during the Korean trading session or before
-    # the daily snapshot is finalized. Walk backward to the newest usable day.
-    d=business_day()
-    for _ in range(lookback_days):
-        if d.weekday() < 5:
-            for m in markets:
-                cp=caps(ymd(d),m)
-                ts=tickers(m,ymd(d))
-                if not cp.empty and ts:
-                    return d
-        d -= dt.timedelta(days=1)
-    return None
-
 def run_scan(markets, per_market, min_value, min_score):
-    end=latest_krx_day(markets)
-    if end is None:
-        raise RuntimeError("최근 10일 내 사용 가능한 KRX 일별 데이터를 찾지 못했습니다.")
-    start=end-dt.timedelta(days=150)
+    end=business_day()
+    start=end-dt.timedelta(days=180)
+    ls=listing()
+    if ls.empty:
+        raise RuntimeError("FinanceDataReader 종목 목록을 불러오지 못했습니다.")
+
+    # Normalize market column and keep selected markets.
+    market_col = "Market" if "Market" in ls.columns else None
+    if market_col:
+        ls=ls[ls[market_col].astype(str).str.upper().isin(markets)].copy()
+    code_col="Code" if "Code" in ls.columns else "Symbol"
+    name_col="Name"
+    ls[code_col]=ls[code_col].astype(str).str.zfill(6)
+
+    # Prefer liquid/large names if listing exposes Amount/Marcap; otherwise preserve listing order.
+    sort_col=None
+    for c in ["Amount","Marcap","MarketCap"]:
+        if c in ls.columns:
+            sort_col=c; break
+    if sort_col:
+        ls=ls.sort_values(sort_col,ascending=False)
+
     universe=[]
     for m in markets:
-        cp=caps(ymd(end),m); ts=tickers(m,ymd(end))
-        if not cp.empty:
-            cp=cp.copy(); cp["ticker"]=cp.index
-            if "거래대금" in cp:
-                cp=cp[cp["거래대금"]>=min_value].sort_values("거래대금",ascending=False)
-            allowed=set(ts); ts=[t for t in cp["ticker"].tolist() if t in allowed]
-        universe += [(m,t) for t in ts[:per_market]]
-
+        part=ls[ls[market_col].astype(str).str.upper()==m] if market_col else ls
+        for _,r in part.head(per_market).iterrows():
+            universe.append((m,r[code_col],r[name_col]))
     if not universe:
-        raise RuntimeError(f"{end:%Y-%m-%d} 기준 종목 목록이 비어 있습니다. KRX 응답을 확인하세요.")
+        raise RuntimeError("선택한 시장의 종목 목록이 비어 있습니다.")
 
-    st.caption(f"📅 스캔 기준일: {end:%Y-%m-%d} (가장 최근 사용 가능한 KRX 일별 데이터)")
+    st.caption(f"📅 스캔 기준: {end:%Y-%m-%d} · FinanceDataReader 가격 데이터")
     bar=st.progress(0,"종목 스캔 중...")
     out=[]
-    for i,(m,t) in enumerate(universe,1):
-        d=prices(t,ymd(start),ymd(end))
-        a=analyze(t,name(t),d) if len(d)>=65 else None
-        if a and a["점수"]>=min_score:
-            a["시장"]=m; out.append(a)
+    for i,(m,t,nm) in enumerate(universe,1):
+        d=prices(t,start.isoformat(),end.isoformat())
+        if len(d)>=65:
+            # Current liquidity filter from the latest available daily bar.
+            latest_value=float(d["거래대금"].iloc[-1]) if "거래대금" in d else 0
+            if latest_value >= min_value:
+                a=analyze(t,nm,d)
+                if a and a["점수"]>=min_score:
+                    a["시장"]=m; out.append(a)
         bar.progress(i/max(1,len(universe)),f"{i}/{len(universe)} 스캔")
     bar.empty()
     if not out: return pd.DataFrame()
@@ -197,8 +210,8 @@ def run_scan(markets, per_market, min_value, min_score):
 st.title("📈 SUNGHO Scanner")
 st.caption("iPhone용 한국주식 단타·스윙 후보 스캐너")
 
-if stock is None:
-    st.error("서버에 pykrx 설치가 필요합니다.")
+if fdr is None:
+    st.error("서버에 FinanceDataReader 설치가 필요합니다.")
     st.stop()
 
 with st.expander("⚙️ 스캔 설정", expanded=False):
