@@ -6,10 +6,8 @@ import streamlit as st
 
 try:
     from pykrx import stock
-    PYKRX_IMPORT_ERROR = None
-except Exception as e:
+except Exception:
     stock = None
-    PYKRX_IMPORT_ERROR = repr(e)
 
 st.set_page_config(
     page_title="SUNGHO Scanner",
@@ -180,8 +178,7 @@ st.title("📈 SUNGHO Scanner")
 st.caption("iPhone용 한국주식 단타·스윙 후보 스캐너")
 
 if stock is None:
-    st.error("pykrx 로딩 실패: " + str(PYKRX_IMPORT_ERROR))
-    st.info("배포 환경에서 pykrx를 불러오지 못했습니다. 아래 오류 내용을 확인하세요.")
+    st.error("서버에 pykrx 설치가 필요합니다.")
     st.stop()
 
 with st.expander("⚙️ 스캔 설정", expanded=False):
@@ -193,10 +190,21 @@ with st.expander("⚙️ 스캔 설정", expanded=False):
 if "scan" not in st.session_state: st.session_state.scan=pd.DataFrame()
 
 if st.button("🚀 지금 스캔",type="primary",use_container_width=True):
-    if markets:
-        st.session_state.scan=run_scan(markets,per_market,min_value_eok*100_000_000,min_score)
-    else:
+    if not markets:
         st.warning("시장을 선택하세요.")
+    else:
+        status = st.empty()
+        status.info("🚀 스캔을 시작합니다. 잠시만 기다려주세요...")
+        try:
+            result = run_scan(markets, per_market, min_value_eok*100_000_000, min_score)
+            st.session_state.scan = result
+            if result.empty:
+                status.warning("⚠️ 조건에 맞는 후보가 없거나 KRX 데이터 응답이 비어 있습니다. 거래대금/점수를 낮춰 다시 시도하세요.")
+            else:
+                status.success(f"✅ 스캔 완료: {len(result)}개 후보")
+        except Exception as e:
+            status.error(f"❌ 스캔 오류: {type(e).__name__}: {e}")
+            st.exception(e)
 
 df=st.session_state.scan
 
