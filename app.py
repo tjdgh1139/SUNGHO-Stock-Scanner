@@ -3,13 +3,775 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from pathlib import Path
+import csv
+from datetime import datetime, timezone
 import requests
+import json
+import time
+import threading
+import hashlib
+import uuid
+from feeds import dart_corporations, naver_news, FeedError
+from ws_protocol import parse_market_packet
+from scoring import overlay_quote, decorate_chart
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import FinanceDataReader as fdr
 except Exception:
     fdr = None
+
+
+AUDIT_DIR = Path("scanner_audit") / st.session_state.setdefault("audit_owner",str(uuid.uuid4()))
+AUDIT_DIR.mkdir(parents=True,exist_ok=True)
+AUDIT_FILE = AUDIT_DIR / "scan_snapshots.csv"
+
+def _safe_num(v, default=0.0):
+    try:
+        x=float(v)
+        return default if np.isnan(x) or np.isinf(x) else x
+    except Exception:
+        return default
+
+def strategy_scores(row):
+    base=_safe_num(row.get("점수",row.get("score",0)))
+    rsi=_safe_num(row.get("RSI",50),50)
+    osc=_safe_num(row.get("MACD_OSC",row.get("MACD OSC",0)))
+    sep=_safe_num(row.get("20일이격",row.get("이격도20",100)),100)
+    value=_safe_num(row.get("거래대금",0))
+    vr=_safe_num(row.get("거래량비",row.get("거래량배수",1)),1)
+    f=_safe_num(row.get("외국인",row.get("외국인순매수",0))) if row.get("수급기준일") else 0
+    i=_safe_num(row.get("기관",row.get("기관순매수",0))) if row.get("수급기준일") else 0
+    p=_safe_num(row.get("프로그램",row.get("프로그램순매수",0))) if timestamp_fresh(row.get("program_received_utc")) else 0
+    ch=_safe_num(row.get("등락률",row.get("등락%",row.get("change_pct",0))))
+    flow=sum(1 if x>0 else -1 if x<0 else 0 for x in (f,i,p))
+    liq=min(18,np.log10(max(value,1))*2.2) if value>0 else 0
+    accel=min(14,max(0,(vr-1)*5))
+    chase=-12 if ch>=18 or sep>=120 else (-6 if ch>=10 or sep>=112 else 0)
+    day=base*.48+liq+accel+flow*4+(8 if osc>0 else -5)+(7 if 52<=rsi<=72 else -10 if rsi>=82 else 1)+chase
+    swing=base*.58+flow*5+(8 if osc>0 else -4)+(6 if 98<=sep<=110 else -5 if sep>=118 else 0)+min(8,liq/2)
+    long=base*.62+flow*2+(6 if 45<=rsi<=68 else 0)+(6 if 95<=sep<=108 else -4 if sep>=120 else 0)
+    return {"단타점수":round(float(np.clip(day,0,100)),1),"스윙점수":round(float(np.clip(swing,0,100)),1),"장기점수":round(float(np.clip(long,0,100)),1)}
+
+def actionable_levels(row):
+    px=_safe_num(row.get("현재가",row.get("종가",row.get("Close",0))))
+    atr=_safe_num(row.get("ATR",0)); ma20=_safe_num(row.get("MA20",row.get("20일선",0)))
+    if px<=0:return {k:np.nan for k in ("매수관심하단","매수관심상단","돌파확인가","손절기준","1차익절","2차익절","1차손익비")}
+    if atr<=0:atr=px*.025
+    support=max(0,min(px,ma20) if ma20>0 and ma20<px*1.03 else px-atr*.8)
+    lo=max(support,px-atr*.35); hi=px+atr*.15; br=px+atr*.45
+    stop=max(px*.01,min(lo-atr*.55,px-atr*.9)); risk=max(hi-stop,px*.008)
+    digits=2 if row.get("currency")=="USD" else 0
+    return {"매수관심하단":round(lo,digits),"매수관심상단":round(hi,digits),"돌파확인가":round(br,digits),"손절기준":round(stop,digits),
+            "1차익절":round(hi+risk*1.8,digits),"2차익절":round(hi+risk*3.0,digits),"1차손익비":1.8}
+
+def signal_state(row):
+    d=strategy_scores(row)["단타점수"]; ch=_safe_num(row.get("등락률",row.get("등락%",0)))
+    return "추격금지" if ch>=20 else "진입확인" if d>=82 else "관심" if d>=72 else "대기" if d>=60 else "제외"
+
+def data_confidence(row):
+    if row.get("currency")=="USD":return "DAILY/DELAYED"
+    ts=pd.to_datetime(row.get("quote_received_utc"),utc=True,errors="coerce")
+    if pd.isna(ts) or not 0 <= (pd.Timestamp.now(tz="UTC")-ts).total_seconds() <= 120:
+        return "DAILY/DELAYED"
+    return "LIVE-MED" if _safe_num(row.get("현재가"))>0 else "DAILY/DELAYED"
+
+def enrich_scan_dataframe(df):
+    if df is None or len(df)==0:return df
+    out=df.copy(); rows=[]
+    for _,r in out.iterrows():
+        d=r.to_dict(); z={}; z.update(strategy_scores(d)); z.update(actionable_levels(d))
+        z["상태"]=execution_permission(d,row_live_health(d)); z["데이터신뢰도"]=data_confidence(d); rows.append(z)
+    a=pd.DataFrame(rows,index=out.index)
+    for c in a.columns:out[c]=a[c]
+    return out
+
+def save_scan_snapshot(df,scan_type="market"):
+    if df is None or len(df)==0:return
+    e=enrich_scan_dataframe(df); now=datetime.now(timezone.utc).isoformat(); rows=[]
+    for rank,(_,r) in enumerate(e.head(50).iterrows(),1):
+        d=r.to_dict(); rows.append({"scan_time_utc":now,"scan_type":scan_type,"rank":rank,
+          "code":d.get("코드",d.get("Code","")),"name":d.get("종목",d.get("종목명",d.get("Name",""))),
+          "price":_safe_num(d.get("현재가",d.get("종가",0))),"day_score":_safe_num(d.get("단타점수",0)),
+          "swing_score":_safe_num(d.get("스윙점수",0)),"long_score":_safe_num(d.get("장기점수",0)),
+          "stop":_safe_num(d.get("손절기준",0)),"tp1":_safe_num(d.get("1차익절",0)),"tp2":_safe_num(d.get("2차익절",0)),
+          "confidence":d.get("데이터신뢰도","")})
+    exists=AUDIT_FILE.exists()
+    with AUDIT_FILE.open("a",newline="",encoding="utf-8-sig") as f:
+        w=csv.DictWriter(f,fieldnames=list(rows[0].keys()))
+        if not exists:w.writeheader()
+        w.writerows(rows)
+
+def audit_summary(history_df):
+    if history_df is None or len(history_df)==0:return pd.DataFrame()
+    m={}
+    for h in ("d1_ret","d3_ret","d5_ret"):
+        if h in history_df.columns:
+            s=pd.to_numeric(history_df[h],errors="coerce").dropna()
+            if len(s):m[h]={"count":len(s),"avg_pct":round(s.mean(),2),"median_pct":round(s.median(),2),"win_rate_pct":round((s>0).mean()*100,1)}
+    return pd.DataFrame(m).T if m else pd.DataFrame()
+
+
+# ============================================================
+# RISK / REGIME / PORTFOLIO SAFETY LAYER
+# ============================================================
+
+def market_regime(index_change_pct=0.0, breadth_pct=50.0, foreign_net=0.0):
+    """Simple transparent market-risk regime. Inputs must be current or explicitly delayed."""
+    idx=_safe_num(index_change_pct); breadth=_safe_num(breadth_pct,50); f=_safe_num(foreign_net)
+    risk=0
+    if idx <= -2.0: risk += 2
+    elif idx <= -1.0: risk += 1
+    if breadth < 30: risk += 2
+    elif breadth < 42: risk += 1
+    if f < 0: risk += 1
+    return "RISK-OFF" if risk >= 4 else "CAUTION" if risk >= 2 else "NORMAL"
+
+def stale_data_penalty(age_seconds=None, confidence="DAILY/DELAYED"):
+    """Penalize stale/low-confidence data instead of pretending it is live."""
+    p=0
+    if confidence=="DAILY/DELAYED": p += 12
+    elif confidence=="LIVE-MED": p += 5
+    if age_seconds is not None:
+        a=_safe_num(age_seconds)
+        if a > 300: p += 12
+        elif a > 120: p += 7
+        elif a > 30: p += 3
+    return p
+
+def risk_adjusted_day_score(row, regime="NORMAL", age_seconds=None):
+    d=strategy_scores(row)["단타점수"]
+    conf=data_confidence(row)
+    d -= stale_data_penalty(age_seconds, conf)
+    if regime=="RISK-OFF": d -= 18
+    elif regime=="CAUTION": d -= 8
+    return round(float(np.clip(d,0,100)),1)
+
+def position_plan(entry, stop, account_cash, risk_pct=0.005, max_position_pct=0.15):
+    """Size a position from maximum account loss and concentration cap."""
+    entry=_safe_num(entry); stop=_safe_num(stop); cash=_safe_num(account_cash)
+    if entry<=0 or stop<=0 or stop>=entry or cash<=0:
+        return {"수량":0,"투입금":0,"최대손실":0}
+    per_share=entry-stop
+    risk_budget=max(0,cash*max(0,min(risk_pct,0.03)))
+    qty_risk=int(risk_budget//per_share)
+    qty_cap=int((cash*max(0,min(max_position_pct,1.0)))//entry)
+    qty=max(0,min(qty_risk,qty_cap))
+    return {"수량":qty,"투입금":round(qty*entry),"최대손실":round(qty*per_share)}
+
+def duplicate_signal_guard(history, code, now_ts, cooldown_minutes=15):
+    """Avoid repeatedly surfacing the same unchanged ticker during a short cooldown."""
+    if history is None or len(history)==0:return False
+    try:
+        h=history[history["code"].astype(str)==str(code)].copy()
+        if len(h)==0:return False
+        ts=pd.to_datetime(h["scan_time_utc"],utc=True,errors="coerce").dropna()
+        if len(ts)==0:return False
+        now=pd.Timestamp(now_ts)
+        if now.tzinfo is None: now=now.tz_localize("UTC")
+        return ((now-ts.max()).total_seconds()/60) < cooldown_minutes
+    except Exception:
+        return False
+
+def audit_export_bytes():
+    """Downloadable audit backup for Streamlit environments with ephemeral local storage."""
+    return AUDIT_FILE.read_bytes() if AUDIT_FILE.exists() else b""
+
+def audit_restore_bytes(data):
+    """Validate a user-owned audit backup before replacing the current history."""
+    if not data or len(data)>10*1024*1024:return False
+    try:
+        from io import BytesIO
+        frame=pd.read_csv(BytesIO(data),dtype={"code":str})
+        required={"scan_time_utc","code","price","stop","tp1"}
+        if not required.issubset(frame.columns) or frame.empty:return False
+        if pd.to_datetime(frame["scan_time_utc"],utc=True,errors="coerce").isna().any():return False
+        for column in ["price","stop","tp1"]:
+            values=pd.to_numeric(frame[column],errors="coerce")
+            if values.isna().any() or not np.isfinite(values).all() or (values<=0).any():return False
+        AUDIT_DIR.mkdir(parents=True,exist_ok=True)
+        temporary=AUDIT_FILE.with_suffix(".tmp")
+        temporary.write_bytes(frame.to_csv(index=False).encode("utf-8-sig"))
+        temporary.replace(AUDIT_FILE)
+        st.session_state.performance_verified=False
+        return True
+    except Exception:return False
+
+
+# ============================================================
+# DEPLOYMENT SELF-TEST
+# ============================================================
+def deployment_self_test():
+    """Non-trading diagnostics. Never prints secrets."""
+    result=[]
+    # dependencies / runtime
+    result.append(("Python/Streamlit runtime", True, "OK"))
+    try:
+        has_key=bool(st.secrets.get("KIS_APP_KEY",""))
+        has_secret=bool(st.secrets.get("KIS_APP_SECRET",""))
+        result.append(("KIS secrets", has_key and has_secret, "설정됨" if has_key and has_secret else "Secrets에 Key/Secret 필요"))
+    except Exception:
+        result.append(("KIS secrets", False, "Secrets 읽기 실패"))
+    result.append(("Audit storage", AUDIT_DIR.exists(), str(AUDIT_DIR)))
+    # Verify required scanner functions exist in this build.
+    for fn in ("strategy_scores","actionable_levels","position_plan","save_scan_snapshot"):
+        result.append((fn, callable(globals().get(fn)), "OK" if callable(globals().get(fn)) else "MISSING"))
+    return pd.DataFrame(result,columns=["검사","통과","상태"])
+
+
+# ============================================================
+# LIVE FAIL-SAFE / HEALTH LAYER
+# ============================================================
+def live_health(last_update_utc=None, rest_ok=True, websocket_ok=True, investor_ok=True):
+    """Health state used to suppress aggressive signals when live feeds degrade."""
+    age=None
+    if last_update_utc:
+        try:
+            ts=pd.Timestamp(last_update_utc)
+            if ts.tzinfo is None: ts=ts.tz_localize("UTC")
+            age=(pd.Timestamp.now(tz="UTC")-ts).total_seconds()
+        except Exception:
+            age=None
+    issues=[]
+    if not rest_ok: issues.append("REST")
+    if not websocket_ok: issues.append("WS")
+    if not investor_ok: issues.append("FLOW")
+    if age is None or age<0 or age>120: issues.append("STALE")
+    state="LIVE" if not issues else ("DEGRADED" if rest_ok else "OFFLINE")
+    return {"state":state,"age_seconds":age,"issues":issues}
+
+def fail_safe_score(row, health=None, regime="NORMAL"):
+    """Never upgrade a score because data is missing; degraded feeds only reduce conviction."""
+    h=health or {"state":"OFFLINE","age_seconds":None,"issues":["UNKNOWN"]}
+    score=risk_adjusted_day_score(row,regime,h.get("age_seconds"))
+    if h.get("state")=="DEGRADED": score-=12
+    elif h.get("state")=="OFFLINE": score-=28
+    return round(float(np.clip(score,0,100)),1)
+
+def timestamp_fresh(value,seconds=120):
+    stamp=pd.to_datetime(value,utc=True,errors="coerce")
+    return bool(pd.notna(stamp) and 0<=(pd.Timestamp.now(tz="UTC")-stamp).total_seconds()<=seconds)
+
+def row_live_health(row):
+    return live_health(row.get("quote_received_utc"),timestamp_fresh(row.get("rest_received_utc")),
+                       timestamp_fresh(row.get("trade_received_utc")) and timestamp_fresh(row.get("book_received_utc")),
+                       timestamp_fresh(row.get("program_received_utc")))
+
+def execution_permission(row, health=None, regime="NORMAL"):
+    """Decision-support gate; does not place orders."""
+    h=health or {"state":"OFFLINE"}
+    score=fail_safe_score(row,h,regime)
+    if h.get("state")!="LIVE" or data_confidence(row)=="DAILY/DELAYED":
+        return "신규진입금지"
+    if regime=="RISK-OFF" and score<88:
+        return "신규진입금지"
+    if score>=82 and data_confidence(row)!="DAILY/DELAYED":
+        return "진입확인"
+    if score>=70:
+        return "관심"
+    return "대기"
+
+def safe_call(fn, *args, default=None, **kwargs):
+    """Prevent a single API/network failure from crashing the whole dashboard."""
+    try:
+        return fn(*args,**kwargs)
+    except Exception:
+        return default
+
+
+# ============================================================
+# ANALYSIS INTEGRITY / ANOMALY LAYER
+# ============================================================
+def validate_market_row(row):
+    """Reject impossible or suspicious market rows before they can become a trade signal."""
+    issues=[]
+    px=_safe_num(row.get("현재가",row.get("종가",0)))
+    close=_safe_num(row.get("종가",px))
+    vol=_safe_num(row.get("장중거래량",row.get("거래량",0)))
+    value=_safe_num(row.get("장중거래대금",row.get("거래대금",0)))
+    ch=_safe_num(row.get("장중등락%",row.get("등락%",row.get("등락률",row.get("등락%",0)))))
+    bid=_safe_num(row.get("매수1",0)); ask=_safe_num(row.get("매도1",0))
+
+    if px<=0: issues.append("PRICE_INVALID")
+    if close<=0: issues.append("CLOSE_INVALID")
+    if vol<0 or value<0: issues.append("LIQUIDITY_INVALID")
+    # Korean equities normally cannot exceed daily price limits; allow margin for source quirks.
+    if abs(ch)>35: issues.append("CHANGE_OUTLIER")
+    if bid>0 and ask>0 and bid>ask: issues.append("BOOK_CROSSED")
+    if px>0 and close>0 and (px/close>1.5 or px/close<0.5): issues.append("PRICE_SCALE_MISMATCH")
+    return {"valid":not issues,"issues":issues}
+
+def source_coverage(row):
+    """Be explicit about what evidence is actually present in the score."""
+    tech=all(k in row for k in ("RSI","거래량x"))
+    live=data_confidence(row)!="DAILY/DELAYED"
+    flow=any(k in row for k in ("외국인","기관","프로그램","외국인순매수","기관순매수"))
+    # News/disclosure connectors are not yet part of this local Streamlit build.
+    return {
+        "기술":bool(tech),
+        "실시간시세":bool(live),
+        "수급":bool(flow),
+        "뉴스":_safe_num(row.get("뉴스건수"))>0,
+        "공시":_safe_num(row.get("공시건수"))>0,
+    }
+
+def integrity_adjusted_score(row, regime="NORMAL", health=None):
+    check=validate_market_row(row)
+    if not check["valid"]:
+        return 0.0
+    score=fail_safe_score(row,health,regime)
+    coverage=source_coverage(row)
+    # Never reward missing evidence. Reduce conviction until the source is truly integrated.
+    if not coverage["수급"]: score-=6
+    if not coverage["뉴스"]: score-=3
+    if not coverage["공시"]: score-=3
+    return round(float(np.clip(score,0,100)),1)
+
+def integrity_status(row):
+    check=validate_market_row(row)
+    if not check["valid"]:
+        return "데이터격리:" + ",".join(check["issues"])
+    c=source_coverage(row)
+    missing=[k for k,v in c.items() if not v]
+    return "정상" if not missing else "미연결:" + ",".join(missing)
+
+
+# ============================================================
+# CATALYST / DISCLOSURE EVIDENCE LAYER
+# ============================================================
+POSITIVE_CATALYST_WORDS=("수주","공급계약","신규계약","흑자전환","상향","증설","승인","허가","자사주","배당","특허","협력","MOU")
+NEGATIVE_CATALYST_WORDS=("유상증자","전환사채","CB","BW","적자전환","하향","소송","제재","리콜","횡령","배임","상장폐지","의견거절","한정의견","부적정의견","계약해지","계약 해지","수주취소","수주 취소","자사주처분","자사주 처분","거래정지")
+
+def catalyst_text_score(title="", body="", source_type="news"):
+    """Transparent keyword evidence score. It never fabricates a catalyst."""
+    text=(str(title)+" "+str(body)).strip()
+    if not text:return {"score":0,"positive":[],"negative":[]}
+    import re
+    def matches(word):
+        if word in ("CB","BW","MOU"):return bool(re.search(r"(?<![A-Za-z])"+word+r"(?![A-Za-z])",text,re.I))
+        return word.lower() in text.lower()
+    pos=[w for w in POSITIVE_CATALYST_WORDS if matches(w)]
+    neg=[w for w in NEGATIVE_CATALYST_WORDS if matches(w)]
+    weight=1.3 if source_type=="dart" else 1.0
+    raw=(len(pos)*6-len(neg)*8)*weight
+    if neg:raw=min(raw,-8*weight)
+    return {"score":round(float(np.clip(raw,-30,30)),1),"positive":pos,"negative":neg}
+
+def catalyst_bundle(items):
+    """Combine only supplied evidence; newer/live fetching is handled by connectors/feed adapters."""
+    if not items:return {"score":0.0,"count":0,"positive":[],"negative":[]}
+    total=0; pos=[]; neg=[]
+    for item in items:
+        z=catalyst_text_score(item.get("title",""),item.get("body",""),item.get("type","news"))
+        total+=z["score"]; pos+=z["positive"]; neg+=z["negative"]
+    return {"score":round(float(np.clip(total,-35,35)),1),"count":len(items),
+            "positive":sorted(set(pos)),"negative":sorted(set(neg))}
+
+def apply_catalyst_score(row, evidence_items=None):
+    """Catalyst score is zero unless real evidence was supplied."""
+    z=catalyst_bundle(evidence_items or [])
+    base=_safe_num(row.get("실시간단타점수",row.get("단타점수",0)))
+    # Cap catalyst contribution so headlines cannot overpower liquidity/risk.
+    final=base+z["score"]*.35
+    return round(float(np.clip(final,0,100)),1),z
+
+def disclosure_feed_status():
+    """Describe feed readiness without pretending a feed is live."""
+    try:
+        dart_key=bool(st.secrets.get("DART_API_KEY",""))
+    except Exception:
+        dart_key=False
+    return {"DART":"READY" if dart_key else "NOT_CONFIGURED",
+            "NEWS":"ADAPTER_REQUIRED"}
+
+def dart_recent_disclosures(corp_code, days=2, max_count=20):
+    """Official OpenDART adapter. Requires user's DART_API_KEY in Streamlit Secrets."""
+    try:
+        key=st.secrets.get("DART_API_KEY","")
+    except Exception:
+        key=""
+    if not key or not corp_code:return []
+    try:
+        end=pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y%m%d")
+        begin=(pd.Timestamp.now(tz="Asia/Seoul")-pd.Timedelta(days=max(1,days))).strftime("%Y%m%d")
+        r=requests.get("https://opendart.fss.or.kr/api/list.json",
+            params={"crtfc_key":key,"corp_code":str(corp_code),"bgn_de":begin,"end_de":end,"page_count":max_count},
+            timeout=8)
+        r.raise_for_status(); payload=r.json()
+        if payload.get("status") not in ("000","013"):return []
+        st.session_state.dart_live_verified=True
+        out=[]
+        for x in payload.get("list",[]) or []:
+            out.append({"type":"dart","title":x.get("report_nm",""),"body":x.get("corp_name",""),
+                        "date":x.get("rcept_dt",""),"receipt":x.get("rcept_no","")})
+        return out
+    except Exception:
+        return []
+
+
+# ============================================================
+# DART CORP-CODE MAP / RATE-SAFE CATALYST CACHE
+# ============================================================
+_DART_CORP_MAP=st.session_state.setdefault("dart_corp_map",{})
+_DART_CACHE=st.session_state.setdefault("dart_cache",{})
+
+def dart_corp_map_status():
+    return {"count":len(_DART_CORP_MAP),"ready":bool(_DART_CORP_MAP)}
+
+def load_dart_corp_map_csv(data):
+    """Load a user-owned KRX-code -> DART corp_code CSV without exposing credentials.
+    Accepted columns: stock_code,corp_code or 종목코드,고유번호.
+    """
+    global _DART_CORP_MAP
+    try:
+        from io import BytesIO
+        df=pd.read_csv(BytesIO(data),dtype=str)
+        stock_col="stock_code" if "stock_code" in df.columns else "종목코드" if "종목코드" in df.columns else None
+        corp_col="corp_code" if "corp_code" in df.columns else "고유번호" if "고유번호" in df.columns else None
+        if not stock_col or not corp_col:return False
+        m={}
+        for _,r in df[[stock_col,corp_col]].dropna().iterrows():
+            stock=str(r[stock_col]).strip().zfill(6)
+            corp=str(r[corp_col]).strip().zfill(8)
+            if stock.isdigit() and corp.isdigit():m[stock]=corp
+        if not m:return False
+        _DART_CORP_MAP=m
+        st.session_state.dart_corp_map=m
+        return True
+    except Exception:
+        return False
+
+def dart_corp_code(stock_code):
+    return _DART_CORP_MAP.get(str(stock_code).zfill(6))
+
+def cached_dart_disclosures(stock_code, days=2, ttl_seconds=300):
+    """Rate-safe DART lookup. No mapping/no key -> empty evidence, never guessed evidence."""
+    import time
+    code=str(stock_code).zfill(6)
+    corp=dart_corp_code(code)
+    if not corp:return []
+    key=(code,int(days))
+    now=time.time()
+    hit=_DART_CACHE.get(key)
+    if hit and now-hit["time"]<ttl_seconds:return hit["data"]
+    data=dart_recent_disclosures(corp,days=days,max_count=20)
+    _DART_CACHE[key]={"time":now,"data":data}
+    return data
+
+def attach_disclosure_evidence(df, top_n=30, days=2):
+    """Query only top candidates to protect latency/API quota, then re-rank with real DART evidence."""
+    if df is None or len(df)==0:return df
+    out=df.copy()
+    out["공시점수"]=0.0
+    out["공시건수"]=0
+    if "실시간단타점수" in out.columns:
+        out["실시간단타점수"]=pd.to_numeric(out["실시간단타점수"],errors="coerce").fillna(0).astype(float)
+    out["공시근거"]=""
+    limit=min(max(int(top_n),0),len(out))
+    for idx in out.head(limit).index:
+        r=out.loc[idx]
+        code=r.get("코드",r.get("Code",""))
+        items=cached_dart_disclosures(code,days=days)
+        z=catalyst_bundle(items)
+        out.at[idx,"공시점수"]=z["score"]
+        out.at[idx,"공시건수"]=z["count"]
+        out.at[idx,"공시근거"]=" / ".join((z["positive"]+z["negative"])[:6])
+        base=_safe_num(out.at[idx,"실시간단타점수"] if "실시간단타점수" in out.columns else r.get("단타점수",0))
+        out.at[idx,"실시간단타점수"]=round(float(np.clip(base+z["score"]*.35,0,100)),1)
+    return out.sort_values(["실시간단타점수","단타점수","점수"],ascending=False)
+
+
+# ============================================================
+# NEWS EVIDENCE ADAPTER (USER/FEED SUPPLIED, TIMESTAMP-AWARE)
+# ============================================================
+_NEWS_CACHE=st.session_state.setdefault("news_cache",[])
+
+def load_news_feed_csv(data):
+    """Load a timestamped news feed exported from a trusted provider.
+    Required: title. Optional: published_at, source, body, stock_code, stock_name, url.
+    This app does not scrape arbitrary sites or invent missing headlines.
+    """
+    global _NEWS_CACHE
+    try:
+        from io import BytesIO
+        df=pd.read_csv(BytesIO(data),dtype=str).fillna("")
+        if "title" not in df.columns:return False
+        rows=[]
+        for _,r in df.iterrows():
+            x={k:str(r.get(k,"")).strip() for k in ("title","published_at","source","body","stock_code","stock_name","url")}
+            if not x["title"]:continue
+            if x["published_at"]:
+                ts=pd.to_datetime(x["published_at"],utc=True,errors="coerce")
+                x["_ts"]=ts.isoformat() if pd.notna(ts) else ""
+            else:x["_ts"]=""
+            rows.append(x)
+        _NEWS_CACHE=rows
+        st.session_state.news_cache=rows
+        return bool(rows)
+    except Exception:
+        return False
+
+def news_feed_status():
+    return {"count":len(_NEWS_CACHE),"ready":bool(_NEWS_CACHE)}
+
+def news_for_stock(stock_code="", stock_name="", max_age_hours=24, max_items=20):
+    now=pd.Timestamp.now(tz="UTC")
+    code=str(stock_code).zfill(6) if str(stock_code).strip() else ""
+    name=str(stock_name).strip()
+    out=[]
+    for x in _NEWS_CACHE:
+        # Require explicit stock code/name match; no fuzzy hallucinated association.
+        matched=(code and str(x.get("stock_code","")).zfill(6)==code) or (name and name in (x.get("title","")+" "+x.get("body","")+" "+x.get("stock_name","")))
+        if not matched:continue
+        ts=pd.to_datetime(x.get("_ts"),utc=True,errors="coerce")
+        if pd.isna(ts) or not 0 <= (now-ts).total_seconds() <= max_age_hours*3600:continue
+        out.append({"type":"news","title":x.get("title",""),"body":x.get("body",""),
+                    "source":x.get("source",""),"published_at":x.get("_ts",""),"url":x.get("url","")})
+        if len(out)>=max_items:break
+    return out
+
+def attach_news_evidence(df, top_n=30, max_age_hours=24):
+    if df is None or len(df)==0:return df
+    out=df.copy()
+    out["뉴스점수"]=0.0; out["뉴스건수"]=0; out["뉴스근거"]=""
+    if "실시간단타점수" in out.columns:
+        out["실시간단타점수"]=pd.to_numeric(out["실시간단타점수"],errors="coerce").fillna(0).astype(float)
+    for idx in out.head(min(max(int(top_n),0),len(out))).index:
+        r=out.loc[idx]
+        items=news_for_stock(r.get("코드",r.get("Code","")),r.get("종목",r.get("종목명",r.get("Name",""))),max_age_hours)
+        z=catalyst_bundle(items)
+        out.at[idx,"뉴스점수"]=z["score"]; out.at[idx,"뉴스건수"]=z["count"]
+        out.at[idx,"뉴스근거"]=" / ".join((z["positive"]+z["negative"])[:6])
+        base=_safe_num(out.at[idx,"실시간단타점수"] if "실시간단타점수" in out.columns else r.get("단타점수",0))
+        # News gets lower weight than official DART disclosures.
+        out.at[idx,"실시간단타점수"]=round(float(np.clip(base+z["score"]*.20,0,100)),1)
+    return out.sort_values(["실시간단타점수","단타점수","점수"],ascending=False)
+
+
+# ============================================================
+# FOCUSED LIVE RERANK (TOP CANDIDATES)
+# ============================================================
+# ============================================================
+# RATE-SAFE ROTATING LIVE REFRESH / MARKET SESSION GUARD
+# ============================================================
+def kr_market_session(now_kst=None):
+    """Broad Korean equity session guard including NXT/pre/after windows."""
+    now=now_kst or pd.Timestamp.now(tz="Asia/Seoul")
+    if not isinstance(now,pd.Timestamp): now=pd.Timestamp(now)
+    now=now.tz_localize("Asia/Seoul") if now.tzinfo is None else now.tz_convert("Asia/Seoul")
+    if now.weekday()>=5:return "CLOSED"
+    hm=now.hour*60+now.minute
+    if 8*60 <= hm < 9*60:return "PRE"
+    if 9*60 <= hm < 15*60+30:return "REGULAR"
+    if 15*60+30 <= hm < 20*60:return "AFTER"
+    return "CLOSED"
+
+def refresh_batch_indices(df, batch_size=8):
+    """Rotate through candidates instead of hammering every symbol each refresh."""
+    if df is None or len(df)==0:return []
+    n=len(df); b=max(1,min(int(batch_size),n))
+    cursor=int(st.session_state.get("live_cursor",0))%n
+    pos=[(cursor+i)%n for i in range(b)]
+    st.session_state.live_cursor=(cursor+b)%n
+    return list(df.sort_index().index[pos])
+
+def refresh_top_candidates_rate_safe(df, top_n=30, batch_size=8):
+    if df is None or len(df)==0 or not kis_configured():return df
+    session=kr_market_session_safe()
+    if session=="CLOSED":return df
+    out=df.copy(); focus=out.head(min(max(int(top_n),1),len(out))).copy()
+    idxs=refresh_batch_indices(out,batch_size)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=min(4,len(idxs) or 1)) as ex:
+        fut={ex.submit(kis_quote,str(out.loc[idx].get("코드","")).zfill(6)):idx for idx in idxs}
+        for f in as_completed(fut):
+            idx=fut[f]
+            try:q=f.result()
+            except Exception:q=None
+            if not q:continue
+            for k,v in q.items():out.at[idx,k]=v
+            if q.get("현재가",0)>0:
+                out.at[idx,"종가"]=q["현재가"]; out.at[idx,"등락%"]=q.get("장중등락%",out.loc[idx].get("등락%",0))
+    tape_data,tape_connected,tape_error=live_tape().snapshot()
+    if tape_connected and timestamp_fresh(tape_data.get("trade_received_utc")):
+        for idx in out.index:
+            if str(out.at[idx,"코드"])==tape_data.get("코드"):
+                for key,value in tape_data.items():out.at[idx,key]=value
+                if idx not in idxs:idxs.append(idx)
+    out=refresh_technical_rows(out,idxs)
+    # Recalculate all candidates using latest available data; only batch network calls rotate.
+    out["현재가"]=pd.to_numeric(out["현재가"],errors="coerce").fillna(out["종가"]) if "현재가" in out.columns else pd.to_numeric(out["종가"],errors="coerce")
+    out["거래대금"]=pd.to_numeric(out["장중거래대금"],errors="coerce").fillna(out.get("거래대금",0)) if "장중거래대금" in out.columns else out.get("거래대금",pd.Series(0.0,index=out.index))
+    out["등락률"]=out["등락%"]
+    out=enrich_scan_dataframe(out)
+    out["분석무결성"]=[integrity_status(r.to_dict()) for _,r in out.iterrows()]
+    out["실시간단타점수"]=[integrity_adjusted_score(r.to_dict(),"NORMAL",row_live_health(r)) for _,r in out.iterrows()]
+    out["매수하단"]=out["매수관심하단"]; out["매수상단"]=out["매수관심상단"]; out["손절가"]=out["손절기준"]
+    out["1차목표"]=out["1차익절"]; out["2차목표"]=out["2차익절"]
+    return attach_all_evidence(out)
+
+
+_KRX_HOLIDAYS=st.session_state.setdefault("krx_holidays",set())
+def load_krx_holidays_csv(data):
+    global _KRX_HOLIDAYS
+    try:
+        from io import BytesIO
+        df=pd.read_csv(BytesIO(data),dtype=str)
+        col="date" if "date" in df.columns else "일자" if "일자" in df.columns else None
+        if not col:return False
+        vals=set()
+        for v in df[col].dropna():
+            ts=pd.to_datetime(str(v),errors="coerce")
+            if pd.notna(ts):vals.add(ts.strftime("%Y-%m-%d"))
+        if not vals:return False
+        _KRX_HOLIDAYS=vals; st.session_state.krx_holidays=vals; return True
+    except Exception:return False
+def krx_holiday_status(): return {"count":len(_KRX_HOLIDAYS),"configured":bool(_KRX_HOLIDAYS)}
+def is_krx_holiday(now_kst=None):
+    now=now_kst or pd.Timestamp.now(tz="Asia/Seoul")
+    if not isinstance(now,pd.Timestamp):now=pd.Timestamp(now)
+    now=now.tz_localize("Asia/Seoul") if now.tzinfo is None else now.tz_convert("Asia/Seoul")
+    return now.strftime("%Y-%m-%d") in _KRX_HOLIDAYS
+def kr_market_session_safe(now_kst=None):
+    now=now_kst or pd.Timestamp.now(tz="Asia/Seoul")
+    if not isinstance(now,pd.Timestamp):now=pd.Timestamp(now)
+    now=now.tz_localize("Asia/Seoul") if now.tzinfo is None else now.tz_convert("Asia/Seoul")
+    if now.weekday()>=5 or is_krx_holiday(now):return "CLOSED"
+    return kr_market_session(now)
+
+
+# ============================================================
+def build_id():
+    root=Path(__file__).resolve().parent
+    digest=hashlib.sha256()
+    for name in ("app.py","feeds.py","scoring.py","ws_protocol.py","performance.py","requirements.txt"):
+        digest.update(name.encode());digest.update((root/name).read_bytes())
+    return digest.hexdigest()[:12]
+
+def deployment_attestation_valid():
+    proof=st.session_state.get("deploy_attestation",{})
+    stamp=pd.to_datetime(proof.get("verified_utc"),utc=True,errors="coerce")
+    return bool(proof.get("build_id")==build_id() and proof.get("app_url")=="https://sungho-stock-scanner-vwyfgmbbuipzpd3btyuh7r.streamlit.app/"
+                and proof.get("visible_build_verified") is True and pd.notna(stamp)
+                and 0<=(pd.Timestamp.now(tz="UTC")-stamp).total_seconds()<86400)
+
+def secret_value(name):
+    try:return str(st.secrets.get(name, ""))
+    except Exception:return ""
+
+def ensure_dart_map():
+    global _DART_CORP_MAP
+    if _DART_CORP_MAP:return True
+    if not secret_value("DART_API_KEY"):return False
+    try:
+        _DART_CORP_MAP=dart_corporations(secret_value("DART_API_KEY"))
+        st.session_state.dart_corp_map=_DART_CORP_MAP
+        st.session_state.setdefault("feed_diagnostics",{})["DART_MAPPING"]="PASS" if _DART_CORP_MAP else "EMPTY"
+        return bool(_DART_CORP_MAP)
+    except Exception as exc:
+        st.session_state.setdefault("feed_diagnostics",{})["DART_MAPPING"]=type(exc).__name__
+        return False
+
+def refresh_news_candidates(frame,top_n=10,ttl=300):
+    global _NEWS_CACHE
+    client_id=secret_value("NAVER_CLIENT_ID");client_secret=secret_value("NAVER_CLIENT_SECRET")
+    if not client_id or not client_secret:return
+    cache=st.session_state.setdefault("automatic_news",{})
+    for _,row in frame.head(top_n).iterrows():
+        code=str(row.get("코드",""));name=str(row.get("종목",""))
+        if not name:continue
+        hit=cache.get(code,{})
+        if time.time()-hit.get("time",0)<ttl:continue
+        try:
+            items=naver_news(name,code,client_id,client_secret)
+            cache[code]={"time":time.time(),"items":items}
+            st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="PASS_RESPONSE"
+        except Exception as exc:
+            st.session_state.setdefault("feed_diagnostics",{})["NEWS"]=type(exc).__name__
+    manual=[x for x in _NEWS_CACHE if x.get("source")!="NAVER Search"]
+    _NEWS_CACHE=manual+[x for hit in cache.values() for x in hit.get("items",[])]
+    st.session_state.news_cache=_NEWS_CACHE
+
+def refresh_technical_rows(frame,indices):
+    out=frame.copy()
+    end=business_day();start=end-dt.timedelta(days=240)
+    for idx in indices:
+        row=out.loc[idx].to_dict()
+        if data_confidence(row)=="DAILY/DELAYED":continue
+        history=prices(row.get("코드"),start.isoformat(),end.isoformat())
+        if history is not None and not history.empty and not row.get("market_date"):
+            row["market_date"]=pd.Timestamp(history.index[-1]).strftime("%Y%m%d")
+        updated=overlay_quote(history,row)
+        if updated is None or len(updated)<65:continue
+        technical=analyze(row.get("코드"),row.get("종목",""),updated)
+        if technical:
+            for key,value in technical.items():out.at[idx,key]=value
+            out.at[idx,"등락%"]=row.get("장중등락%",technical["등락%"])
+            out.at[idx,"거래량비"]=technical.get("거래량x",1)
+            out.at[idx,"20일이격"]=100+technical.get("20일이격%",0)
+    return out
+
+def attach_all_evidence(frame):
+    if frame is None or frame.empty:return frame
+    out=frame.copy()
+    out["실시간단타점수"]=pd.to_numeric(out["실시간단타점수"],errors="coerce").fillna(0).astype(float)
+    # Called after a new base score; reset all catalyst increments to prevent accumulation.
+    for column in ["공시점수","공시건수","뉴스점수","뉴스건수"]:out[column]=0.0
+    if ensure_dart_map():out=attach_disclosure_evidence(out,top_n=10)
+    refresh_news_candidates(out)
+    if news_feed_status().get("ready"):out=attach_news_evidence(out,top_n=10)
+    out["분석무결성"]=[integrity_status(r.to_dict()) for _,r in out.iterrows()]
+    for idx,row in out.iterrows():
+        d=row.to_dict();health=row_live_health(d)
+        base=integrity_adjusted_score(d,"NORMAL",health)
+        out.at[idx,"실시간단타점수"]=round(float(np.clip(base+_safe_num(d.get("공시점수"))*.35+_safe_num(d.get("뉴스점수"))*.2,0,100)),1)
+        out.at[idx,"상태"]=execution_permission(d,health)
+    return out.sort_values(["실시간단타점수","단타점수","점수","거래대금x"],ascending=False)
+
+# RELEASE READINESS GATE
+# ============================================================
+def release_readiness():
+    """Deployment checklist. Never exposes secret values."""
+    rows=[]
+    try:
+        kis_ok=bool(st.secrets.get("KIS_APP_KEY","")) and bool(st.secrets.get("KIS_APP_SECRET",""))
+    except Exception:kis_ok=False
+    try:
+        dart_ok=bool(st.secrets.get("DART_API_KEY",""))
+    except Exception:dart_ok=False
+    rows += [
+        {"항목":"KIS 인증정보","필수":True,"상태":"PASS" if kis_ok else "NEEDED"},
+        {"항목":"WebSocket 패키지","필수":True,"상태":"PASS" if websocket_capability() else "NEEDED"},
+        {"항목":"DART API","필수":False,"상태":"PASS" if dart_ok else "OPTIONAL"},
+        {"항목":"DART 종목매핑","필수":False,"상태":"PASS" if dart_corp_map_status().get("ready") else "OPTIONAL"},
+        {"항목":"뉴스피드","필수":False,"상태":"PASS" if news_feed_status().get("ready") else "OPTIONAL"},
+        {"항목":"KRX 휴장일","필수":False,"상태":"PASS" if krx_holiday_status().get("configured") else "OPTIONAL"},
+    ]
+    required_pass=all(x["상태"]=="PASS" for x in rows if x["필수"])
+    return pd.DataFrame(rows),required_pass
+
+def live_release_gate():
+    df,static_ok=release_readiness()
+    q=kis_quote("005930") if kis_configured() else None
+    if disclosure_feed_status().get("DART")=="READY":
+        ensure_dart_map()
+        corp=dart_corp_code("005930")
+        st.session_state.dart_live_verified=False
+        if corp:dart_recent_disclosures(corp)
+    refresh_news_candidates(pd.DataFrame([{"코드":"005930","종목":"삼성전자"}]))
+    data,connected,error=live_tape().snapshot()
+    checks={
+        "KIS REST":bool(q and _safe_num(q.get("현재가"))>0),
+        "WebSocket 실제 체결·호가":bool(connected and timestamp_fresh(data.get("trade_received_utc")) and timestamp_fresh(data.get("book_received_utc"))),
+        "DART 응답":bool(st.session_state.get("dart_live_verified")),
+        "프로그램 실제 수신":timestamp_fresh(data.get("program_received_utc")),
+        "뉴스 최신 근거":any(news_for_stock(x.get("stock_code"),x.get("stock_name")) for x in _NEWS_CACHE),
+        "성적검증":bool(st.session_state.get("performance_verified") and st.session_state.get("performance_verified_build")==build_id()),
+        "실제 배포 확인":deployment_attestation_valid(),
+    }
+    rows=pd.DataFrame([{"항목":k,"필수":True,"상태":"PASS" if v else "UNVERIFIED"} for k,v in checks.items()])
+    return pd.concat([df,rows],ignore_index=True),static_ok,all(checks.values()),"미검증: "+", ".join(k for k,v in checks.items() if not v)
 
 st.set_page_config(
     page_title="SUNGHO Scanner",
@@ -93,6 +855,9 @@ def prices(t, start, end):
     if fdr is None:
         return pd.DataFrame()
     try:
+        if str(t).isdigit() and kis_configured():
+            official=kis_daily_history(str(t),start,end)
+            if len(official)>=65:return official
         d=fdr.DataReader(str(t), start, end).copy()
         if d.empty: return d
         ren={"Open":"시가","High":"고가","Low":"저가","Close":"종가","Volume":"거래량","Change":"등락률"}
@@ -110,15 +875,72 @@ def kis_configured():
     except Exception:
         return False
 
-@st.cache_resource(ttl=21600, show_spinner=False)
-def kis_token(appkey, appsecret):
+@st.cache_resource(show_spinner=False)
+def token_resources():
+    return {}, threading.RLock()
+_TOKEN_STORE,_TOKEN_LOCK=token_resources()
+
+
+def kis_token(appkey, appsecret, force_refresh=False):
+    import hashlib
+    identity=hashlib.sha256((appkey+":"+appsecret).encode()).hexdigest()
+    with _TOKEN_LOCK:
+        return _kis_token_locked(appkey,appsecret,force_refresh,identity)
+
+def _kis_token_locked(appkey, appsecret, force_refresh, identity):
+    """Reuse OAuth token to avoid needless token issuance and rate-limit pressure."""
+    import time
+    _KIS_TOKEN_CACHE=_TOKEN_STORE.setdefault(identity,{"token":None,"expires_at":0.0})
+    now=time.time()
+    if (not force_refresh and _KIS_TOKEN_CACHE.get("token")
+            and now < float(_KIS_TOKEN_CACHE.get("expires_at",0))-60):
+        return _KIS_TOKEN_CACHE["token"]
     r=requests.post(
         "https://openapi.koreainvestment.com:9443/oauth2/tokenP",
         json={"grant_type":"client_credentials","appkey":appkey,"appsecret":appsecret},
         timeout=10,
     )
     r.raise_for_status()
-    return r.json()["access_token"]
+    payload=r.json()
+    token=payload.get("access_token")
+    if not token:
+        raise RuntimeError("KIS token response missing access_token")
+    # KIS commonly returns access_token_token_expired as a timestamp; use conservative cache
+    # when exact parsing is unavailable.
+    expires_in=float(payload.get("expires_in") or 3600)
+    _KIS_TOKEN_CACHE.update({"token":token,"expires_at":now+max(300,min(expires_in,86400))})
+    return token
+
+
+@st.cache_resource(show_spinner=False)
+def rate_resources():
+    return {"last":0.0},threading.Lock()
+
+_RATE_STATE,_RATE_LOCK=rate_resources()
+
+def kis_rate_wait():
+    with _RATE_LOCK:
+        wait=max(0,.15-(time.monotonic()-_RATE_STATE["last"]))
+        if wait:time.sleep(wait)
+        _RATE_STATE["last"]=time.monotonic()
+
+def kis_get(url, headers, params, appkey, appsecret, timeout=8):
+    """Authenticated GET with one token refresh on HTTP 401."""
+    token=kis_token(appkey,appsecret)
+    h=dict(headers); h["authorization"]=f"Bearer {token}"
+    kis_rate_wait()
+    r=requests.get(url,headers=h,params=params,timeout=timeout)
+    if getattr(r,"status_code",None)==401:
+        token=kis_token(appkey,appsecret,force_refresh=True)
+        h["authorization"]=f"Bearer {token}"
+        kis_rate_wait()
+        r=requests.get(url,headers=h,params=params,timeout=timeout)
+    r.raise_for_status()
+    return r
+
+def kis_market_code():
+    value=secret_value("KIS_MARKET_DIV_CODE") or "UN"
+    return value if value in ("J","NX","UN") else "UN"
 
 def kis_quote(code):
     if not kis_configured():
@@ -126,24 +948,281 @@ def kis_quote(code):
     try:
         appkey=st.secrets["KIS_APP_KEY"]
         appsecret=st.secrets["KIS_APP_SECRET"]
-        token=kis_token(appkey,appsecret)
-        headers={
-            "authorization":f"Bearer {token}", "appkey":appkey, "appsecret":appsecret,
-            "tr_id":"FHKST01010100", "custtype":"P"
-        }
-        params={"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":str(code).zfill(6)}
-        r=requests.get(
+        headers={"appkey":appkey,"appsecret":appsecret,"tr_id":"FHKST01010100","custtype":"P"}
+        params={"FID_COND_MRKT_DIV_CODE":kis_market_code(),"FID_INPUT_ISCD":str(code).zfill(6)}
+        r=kis_get(
             "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price",
-            headers=headers, params=params, timeout=8,
-        )
-        r.raise_for_status(); o=r.json().get("output",{})
+            headers,params,appkey,appsecret,timeout=8)
+        r.raise_for_status(); payload=r.json()
+        if payload.get("rt_cd")!="0": return None
+        o=payload.get("output",{})
         px=float(o.get("stck_prpr") or 0)
         vol=float(o.get("acml_vol") or 0)
         val=float(o.get("acml_tr_pbmn") or 0)
         chg=float(o.get("prdy_ctrt") or 0)
-        return {"현재가":px,"장중등락%":chg,"장중거래량":vol,"장중거래대금":val}
+        return {"현재가":px,"장중등락%":chg,"장중거래량":vol,"장중거래대금":val,"quote_received_utc":pd.Timestamp.now(tz="UTC").isoformat(),"rest_received_utc":pd.Timestamp.now(tz="UTC").isoformat(),
+                "장중시가":_safe_num(o.get("stck_oprc")),"장중고가":_safe_num(o.get("stck_hgpr")),"장중저가":_safe_num(o.get("stck_lwpr")),
+                "market_date":o.get("stck_bsop_date", "")}
     except Exception:
         return None
+
+
+def kis_chart_response(code,path,tr_id,params):
+    if not kis_configured():return {}
+    key=secret_value("KIS_APP_KEY");secret=secret_value("KIS_APP_SECRET")
+    response=kis_get("https://openapi.koreainvestment.com:9443"+path,
+                     {"appkey":key,"appsecret":secret,"tr_id":tr_id,"custtype":"P"},params,key,secret)
+    payload=response.json()
+    return payload if payload.get("rt_cd")=="0" else {}
+
+@st.cache_data(ttl=30,show_spinner=False)
+def kis_daily_history(code,start,end):
+    rows=[];begin=pd.Timestamp(start).normalize();finish=pd.Timestamp(end).normalize()
+    try:
+        for page in range(4):
+            params={"FID_COND_MRKT_DIV_CODE":kis_market_code(),"FID_INPUT_ISCD":str(code).zfill(6),
+                    "FID_INPUT_DATE_1":begin.strftime("%Y%m%d"),"FID_INPUT_DATE_2":finish.strftime("%Y%m%d"),
+                    "FID_PERIOD_DIV_CODE":"D","FID_ORG_ADJ_PRC":"0"}
+            payload=kis_chart_response(code,"/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice","FHKST03010100",params)
+            batch=[x for x in payload.get("output2",[]) if x.get("stck_bsop_date")]
+            if not batch:break
+            rows.extend(batch)
+            earliest=min(pd.Timestamp(x["stck_bsop_date"]) for x in batch)
+            if earliest<=begin or len(batch)<100:break
+            new_finish=earliest-pd.Timedelta(days=1)
+            if new_finish>=finish:break
+            finish=new_finish
+        if not rows:return pd.DataFrame()
+        data=pd.DataFrame(rows).rename(columns={"stck_bsop_date":"date","stck_oprc":"시가","stck_hgpr":"고가","stck_lwpr":"저가","stck_clpr":"종가","acml_vol":"거래량","acml_tr_pbmn":"거래대금"})
+        data["date"]=pd.to_datetime(data["date"],format="%Y%m%d",errors="coerce")
+        data=data.dropna(subset=["date"]).drop_duplicates("date").set_index("date").sort_index()
+        for column in ["시가","고가","저가","종가","거래량","거래대금"]:
+            if column in data:data[column]=pd.to_numeric(data[column],errors="coerce")
+        if "거래대금" not in data:data["거래대금"]=data["종가"]*data["거래량"]
+        data=data.loc[pd.Timestamp(start):pd.Timestamp(end)].dropna(subset=["시가","고가","저가","종가","거래량"])
+        data.attrs["source"]="KIS DAILY"
+        return data
+    except Exception:return pd.DataFrame()
+
+@st.cache_data(ttl=15,show_spinner=False)
+def kis_minute_history(code):
+    try:
+        params={"FID_COND_MRKT_DIV_CODE":kis_market_code(),"FID_INPUT_ISCD":str(code).zfill(6),"FID_INPUT_HOUR_1":pd.Timestamp.now(tz="Asia/Seoul").strftime("%H%M%S"),"FID_PW_DATA_INCU_YN":"Y","FID_ETC_CLS_CODE":""}
+        payload=kis_chart_response(code,"/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice","FHKST03010200",params)
+        data=pd.DataFrame(payload.get("output2",[]))
+        if data.empty:return data
+        data["time"]=pd.to_datetime(data["stck_bsop_date"]+data["stck_cntg_hour"],format="%Y%m%d%H%M%S",errors="coerce")
+        data=data.rename(columns={"stck_oprc":"시가","stck_hgpr":"고가","stck_lwpr":"저가","stck_prpr":"종가","cntg_vol":"거래량"})
+        for column in ["시가","고가","저가","종가","거래량"]:data[column]=pd.to_numeric(data[column],errors="coerce")
+        data["거래대금"]=data["종가"]*data["거래량"]
+        return data.dropna(subset=["time","종가"]).drop_duplicates("time").set_index("time").sort_index()
+    except Exception:return pd.DataFrame()
+
+@st.cache_data(ttl=3, show_spinner=False)
+def kis_orderbook(code):
+    """Top-of-book snapshot. Official REST fallback for live bid/ask."""
+    if not kis_configured():
+        return None
+    try:
+        appkey=st.secrets["KIS_APP_KEY"]; appsecret=st.secrets["KIS_APP_SECRET"]
+        headers={"appkey":appkey,"appsecret":appsecret,"tr_id":"FHKST01010200","custtype":"P"}
+        params={"FID_COND_MRKT_DIV_CODE":kis_market_code(),"FID_INPUT_ISCD":str(code).zfill(6)}
+        r=kis_get(
+            "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+            headers,params,appkey,appsecret,timeout=8)
+        r.raise_for_status()
+        o=r.json().get("output1",{}) or {}
+        def num(k):
+            try: return float(o.get(k) or 0)
+            except Exception: return 0.0
+        return {
+            "매도1":num("askp1"), "매수1":num("bidp1"),
+            "매도1잔량":num("askp_rsqn1"), "매수1잔량":num("bidp_rsqn1"),
+            "총매도잔량":num("total_askp_rsqn"), "총매수잔량":num("total_bidp_rsqn"),
+        }
+    except Exception:
+        return None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def kis_investor(code):
+    """Investor history. KIS notes same-day figures are provided after market close."""
+    if not kis_configured():
+        return pd.DataFrame()
+    try:
+        appkey=st.secrets["KIS_APP_KEY"]; appsecret=st.secrets["KIS_APP_SECRET"]
+        headers={"appkey":appkey,"appsecret":appsecret,"tr_id":"FHKST01010900","custtype":"P"}
+        params={"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":str(code).zfill(6)}
+        r=kis_get(
+            "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-investor",
+            headers,params,appkey,appsecret,timeout=8)
+        r.raise_for_status()
+        rows=r.json().get("output",[]) or []
+        if not rows: return pd.DataFrame()
+        z=pd.DataFrame(rows)
+        keep=["stck_bsop_date","prsn_ntby_qty","frgn_ntby_qty","orgn_ntby_qty"]
+        if not all(c in z.columns for c in keep): return pd.DataFrame()
+        z=z[keep].rename(columns={
+            "stck_bsop_date":"일자","prsn_ntby_qty":"개인",
+            "frgn_ntby_qty":"외국인","orgn_ntby_qty":"기관"})
+        for c in ["개인","외국인","기관"]:
+            z[c]=pd.to_numeric(z[c],errors="coerce").fillna(0)
+        return z
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_resource(show_spinner=False)
+def websocket_capability():
+    """
+    Return whether the optional websocket-client dependency is installed.
+    The UI uses REST snapshots everywhere and exposes WebSocket streaming only
+    when the deployment has the dependency and KIS credentials.
+    """
+    try:
+        import websocket  # websocket-client
+        return True
+    except Exception:
+        return False
+
+class KISLiveTape:
+    """One-symbol KRX/NXT/unified trade, quote and program monitor with reconnect."""
+    def __init__(self):
+        self.lock=threading.Lock()
+        self.stop_event=threading.Event()
+        self.thread=None
+        self.ws=None
+        self.code=None
+        self.data={}
+        self.error=""
+        self.connected=False
+        self.acknowledged=set()
+        self.reconnect_count=0
+
+    def snapshot(self):
+        with self.lock:
+            return dict(self.data), self.connected, self.error
+
+    def stop(self):
+        self.stop_event.set()
+        if self.ws is not None:
+            self.ws.close()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=12)
+        self.connected=False
+
+    def start(self, code, appkey, appsecret, market="UN"):
+        code=str(code).zfill(6)
+        if self.thread and self.thread.is_alive() and self.code==code:
+            return
+        self.stop()
+        if self.thread and self.thread.is_alive():
+            self.error="이전 연결 종료 대기 중"
+            return
+        self.stop_event=threading.Event()
+        self.code=code
+        self.data={}
+        self.acknowledged=set()
+        self.error=""
+        self.thread=threading.Thread(
+            target=self._run,args=(code,appkey,appsecret,market),daemon=True)
+        self.thread.start()
+
+    def _run(self, code, appkey, appsecret, market="UN"):
+        try:
+            import websocket
+        except Exception:
+            self.error="websocket-client 패키지가 없습니다."
+            return
+        try:
+            rr=requests.post(
+                "https://openapi.koreainvestment.com:9443/oauth2/Approval",
+                headers={"content-type":"application/json"},
+                data=json.dumps({"grant_type":"client_credentials",
+                                 "appkey":appkey,"secretkey":appsecret}),
+                timeout=10)
+            rr.raise_for_status()
+            approval=rr.json()["approval_key"]
+        except Exception as e:
+            self.error=f"WebSocket 접속키 발급 실패: {type(e).__name__}"
+            return
+
+        def sub(tr_id):
+            return json.dumps({
+                "header":{"approval_key":approval,"custtype":"P",
+                          "tr_type":"1","content-type":"utf-8"},
+                "body":{"input":{"tr_id":tr_id,"tr_key":code}}
+            })
+
+        channels={"UN":("H0UNCNT0","H0UNASP0","H0UNPGM0"),"NX":("H0NXCNT0","H0NXASP0","H0NXPGM0"),"J":("H0STCNT0","H0STASP0","H0STPGM0")}.get(market)
+        if channels is None:
+            self.error="지원하지 않는 시장 코드"
+            return
+
+        def on_open(ws):
+            self.connected=True
+            for channel in channels:
+                ws.send(sub(channel))
+                time.sleep(.15)
+
+        def on_error(ws, err):
+            self.error=f"WebSocket 오류: {type(err).__name__}"
+            self.connected=False
+
+        def on_close(ws, *args):
+            self.connected=False
+
+        def on_message(ws, message):
+            if self.stop_event.is_set():
+                try: ws.close()
+                except Exception: pass
+                return
+            try:
+                if not message:
+                    return
+                if message[0] == "0":
+                    for upd in parse_market_packet(message):
+                        if upd["코드"]==code:
+                            with self.lock:self.data.update(upd)
+                else:
+                    # KIS sends JSON subscription acknowledgements / ping messages.
+                    try:
+                        obj=json.loads(message)
+                        if obj.get("header",{}).get("tr_id")=="PINGPONG":
+                            ws.send(message)
+                        elif obj.get("body",{}).get("rt_cd")=="0":
+                            with self.lock:self.acknowledged.add(obj.get("header",{}).get("tr_id"))
+                        elif "rt_cd" in obj.get("body",{}):
+                            self.error="KIS 구독 거절"
+                    except Exception:
+                        pass
+            except Exception as e:
+                self.error=f"실시간 데이터 처리: {type(e).__name__}"
+
+        try:
+            ws=websocket.WebSocketApp(
+                "ws://ops.koreainvestment.com:21000",
+                on_open=on_open,on_message=on_message,
+                on_error=on_error,on_close=on_close)
+            self.ws=ws
+            delay=1
+            while not self.stop_event.is_set():
+                ws.run_forever(ping_interval=None)
+                self.connected=False
+                if self.stop_event.wait(delay):break
+                self.reconnect_count+=1
+                delay=min(delay*2,30)
+        except Exception as e:
+            self.error=f"WebSocket 연결: {type(e).__name__}"
+            self.connected=False
+
+@st.cache_resource(show_spinner=False)
+def _cached_live_tape(session_id):
+    return KISLiveTape()
+
+def live_tape():
+    import uuid
+    sid=st.session_state.setdefault("tape_session_id",str(uuid.uuid4()))
+    return _cached_live_tape(sid)
+
 
 def add_trade_levels(a, d):
     close=float(a["종가"])
@@ -153,11 +1232,12 @@ def add_trade_levels(a, d):
     entry_high=close+0.15*av
     stop=max(0, min(support*0.985, entry_low-1.15*av))
     risk=max(entry_high-stop, av*0.7)
-    a["매수하단"]=int(round(entry_low))
-    a["매수상단"]=int(round(entry_high))
-    a["손절가"]=int(round(stop))
-    a["1차목표"]=int(round(entry_high+1.5*risk))
-    a["2차목표"]=int(round(entry_high+2.5*risk))
+    digits=0 if str(a.get("코드","")).isdigit() else 2
+    a["매수하단"]=round(entry_low,digits)
+    a["매수상단"]=round(entry_high,digits)
+    a["손절가"]=round(stop,digits)
+    a["1차목표"]=round(entry_high+1.5*risk,digits)
+    a["2차목표"]=round(entry_high+2.5*risk,digits)
     return a
 
 
@@ -212,9 +1292,9 @@ def analyze(t, nm, d):
 
     result = {
         "코드":t,"종목":nm,"점수":int(max(0,min(100,round(score)))),
-        "셋업":"/".join(setup) if setup else "관찰","종가":int(close),"등락%":round(chg,2),
+        "셋업":"/".join(setup) if setup else "관찰","종가":int(close) if str(t).isdigit() else round(close,2),"등락%":round(chg,2),
         "20일이격%":round(dist,2),"거래량x":round(vr,2) if not np.isnan(vr) else np.nan,
-        "거래대금x":round(tr,2) if not np.isnan(tr) else np.nan,"RSI":round(rv,1),
+        "거래대금x":round(tr,2) if not np.isnan(tr) else np.nan,"RSI":round(rv,1),"MACD_OSC":osc,"ATR":av,"MA20":ma20,"거래대금":float(x["거래대금"]),"기술기준일":str(d.index[-1]),
         "손절참고":int(max(stop,0)),"지지":int(ma20),"저항":int(d["고가"].tail(20).max()),
         "체크":" · ".join(why[:6])
     }
@@ -259,9 +1339,8 @@ def run_scan(markets, per_market, min_value, min_score):
         d=prices(t,start.isoformat(),end.isoformat())
         if len(d)<65: return None
         latest_value=float(d["거래대금"].iloc[-1]) if "거래대금" in d else 0
-        if latest_value < min_value: return None
         a=analyze(t,nm,d)
-        if a and a["점수"]>=min_score:
+        if a:
             a["시장"]=m
             return a
         return None
@@ -295,12 +1374,100 @@ def run_scan(markets, per_market, min_value, min_score):
                         a["등락%"]=round(q["장중등락%"],2)
 
     if not out: return pd.DataFrame()
-    return pd.DataFrame(out).sort_values(["점수","거래대금x","거래량x"],ascending=False)
+
+    # ULTIMATE integration: live-rescore the actual scan output, not just helper functions.
+    frame=pd.DataFrame(out)
+    if kis_configured():
+        for idx in frame.sort_values("점수",ascending=False).head(10).index:
+            inv=kis_investor(frame.at[idx,"코드"])
+            if not inv.empty:
+                latest=inv.sort_values("일자",ascending=False).iloc[0]
+                frame.at[idx,"수급기준일"]=str(latest["일자"])
+                for key in ["외국인","기관","개인"]:frame.at[idx,key]=latest[key]
+    # Map original scanner fields into the normalized ULTIMATE scoring schema.
+    frame["현재가"]=pd.to_numeric(frame.get("현재가",frame["종가"]),errors="coerce").fillna(frame["종가"])
+    frame["거래대금"]=pd.to_numeric(frame["장중거래대금"],errors="coerce").fillna(frame["거래대금"]) if "장중거래대금" in frame.columns else frame["거래대금"]
+    frame["거래량비"]=pd.to_numeric(frame["거래량x"],errors="coerce").fillna(1) if "거래량x" in frame.columns else pd.Series(1.0,index=frame.index)
+    frame["20일이격"]=100+(pd.to_numeric(frame["20일이격%"],errors="coerce").fillna(0) if "20일이격%" in frame.columns else pd.Series(0.0,index=frame.index))
+    # Preserve the actual MACD oscillator produced by analyze().
+    frame["등락률"]=frame["등락%"]
+    frame=enrich_scan_dataframe(frame)
+
+    # Existing KIS investor endpoint is confirmed/end-of-day, so never label it as live.
+    # Live program/foreign flow can be integrated later only when a verified live endpoint is configured.
+    frame["분석무결성"]=[integrity_status(r.to_dict()) for _,r in frame.iterrows()]
+    frame["실시간단타점수"]=[
+        integrity_adjusted_score(r.to_dict(),"NORMAL",row_live_health(r))
+        for _,r in frame.iterrows()
+    ]
+    # Use the ULTIMATE execution levels as the current decision-support levels.
+    frame["매수하단"]=frame["매수관심하단"]
+    frame["매수상단"]=frame["매수관심상단"]
+    frame["손절가"]=frame["손절기준"]
+    frame["1차목표"]=frame["1차익절"]
+    frame["2차목표"]=frame["2차익절"]
+    # Official evidence reattaches to a newly computed base on every rerank.
+    frame=attach_all_evidence(frame)
+    st.session_state.watch_candidates=frame
+    return frame[(frame["점수"]>=min_score)&(frame["거래대금"]>=min_value)].copy()
+
+
+US_SYMBOLS={"MSFT":"NAS","AMD":"NAS","NVDA":"NAS","MU":"NAS","IONQ":"NYS","RKLB":"NAS","VRT":"NYS","VOO":"AMS","QQQM":"NAS","AAPL":"NAS","AMZN":"NAS"}
+
+def kis_us_quote(symbol,exchange):
+    if not kis_configured():return None
+    try:
+        key=secret_value("KIS_APP_KEY");secret=secret_value("KIS_APP_SECRET")
+        response=kis_get("https://openapi.koreainvestment.com:9443/uapi/overseas-price/v1/quotations/price",
+                         {"appkey":key,"appsecret":secret,"tr_id":"HHDFS00000300","custtype":"P"},
+                         {"AUTH":"","EXCD":exchange,"SYMB":symbol},key,secret)
+        payload=response.json()
+        if payload.get("rt_cd")!="0":return None
+        out=payload.get("output",{});price=_safe_num(out.get("last"))
+        if price<=0:return None
+        return {"현재가":price,"장중등락%":_safe_num(out.get("rate")),"장중거래량":_safe_num(out.get("tvol")),
+                "quote_received_utc":pd.Timestamp.now(tz="UTC").isoformat(),"시세출처":"KIS 해외 REST · 거래소 시세 지연 여부 별도 확인"}
+    except Exception:return None
+
+def run_us_scan(symbols,min_score):
+    out=[];end=dt.date.today();start=end-dt.timedelta(days=240)
+    for symbol in symbols:
+        bars=prices(symbol,start.isoformat(),end.isoformat())
+        if len(bars)<65:continue
+        row=analyze(symbol,symbol,bars)
+        if not row or row["점수"]<min_score:continue
+        row.update({"시장":"US","currency":"USD","20일이격":100+row["20일이격%"],"거래량비":row["거래량x"],"등락률":row["등락%"]})
+        quote=kis_us_quote(symbol,US_SYMBOLS.get(symbol,"NAS"))
+        if quote:row.update(quote)
+        out.append(row)
+    if not out:return pd.DataFrame()
+    frame=enrich_scan_dataframe(pd.DataFrame(out))
+    frame["장기점수설명"]="장기 기술점수 · 기업가치/재무평가 별도"
+    frame["상태"]="대기 · 미국 시세 지연/수급 검증 필요"
+    for label,source in [("매수하단","매수관심하단"),("매수상단","매수관심상단"),("손절가","손절기준"),("1차목표","1차익절"),("2차목표","2차익절")]:frame[label]=frame[source]
+    return frame.sort_values(["단타점수","스윙점수"],ascending=False)
+
+@st.cache_data(ttl=300,show_spinner=False)
+def macro_snapshot():
+    registry={"KOSPI":"KS11","KOSDAQ":"KQ11","KOSPI200":"KS200","NASDAQ":"IXIC","S&P500":"S&P500",
+              "SOX":"YAHOO:^SOX","달러/원":"USD/KRW","브렌트유 선물":"BZ=F","미국10년금리":"US10YT"}
+    rows=[];end=dt.date.today();start=end-dt.timedelta(days=30)
+    for label,symbol in registry.items():
+        try:
+            data=fdr.DataReader(symbol,start.isoformat(),end.isoformat())
+            series=data["Close"] if "Close" in data else data.iloc[:,0]
+            series=pd.to_numeric(series,errors="coerce").dropna()
+            if len(series)<2:raise ValueError("insufficient observations")
+            rows.append({"지표":label,"최근값":float(series.iloc[-1]),"전일대비%":round((series.iloc[-1]/series.iloc[-2]-1)*100,2),
+                         "기준일":str(series.index[-1]),"상태":"일별·지연"})
+        except Exception as exc:rows.append({"지표":label,"상태":"미수신 · "+type(exc).__name__})
+    rows.extend([{"지표":"국내선물","상태":"KIS 선물 종목·계약코드 연결 필요"},{"지표":"국내 야간선물","상태":"야간시장 공급자 연결 필요"}])
+    return pd.DataFrame(rows)
 
 st.title("📈 SUNGHO Scanner")
-st.caption("iPhone용 한국주식 단타·스윙 후보 스캐너 · v4")
+st.caption("iPhone/PC 한국주식 단타·스윙 후보 스캐너 · RC15 검증 진행 중 · 빌드 "+build_id())
 now_kst=dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
-st.caption(f"⏱ 화면 기준시각(KST) {now_kst:%Y-%m-%d %H:%M:%S} · " + ("🟢 KIS 장중 현재가 연결" if kis_configured() else "🟡 일봉 모드 — KIS 키 연결 시 장중 현재가 활성화"))
+st.caption(f"⏱ 화면 기준시각(KST) {now_kst:%Y-%m-%d %H:%M:%S} · " + ("🟡 KIS 인증정보 설정됨 · 연결 검증 필요" if kis_configured() else "🟡 일봉 모드 — KIS 키 연결 시 장중 현재가 활성화"))
 
 if fdr is None:
     st.error("서버에 FinanceDataReader 설치가 필요합니다.")
@@ -311,8 +1478,29 @@ with st.expander("⚙️ 스캔 설정", expanded=False):
     per_market=st.slider("시장별 스캔 수",50,1000,300,50)
     min_value_eok=st.slider("최소 거래대금(억원)",5,500,50,5)
     min_score=st.slider("최소 점수",0,100,45,5)
+    include_us=st.toggle("미국 관심종목도 함께 스캔",value=True)
+    us_symbols=st.multiselect("미국 스캔 대상",list(US_SYMBOLS),default=list(US_SYMBOLS))
+    auto_live=st.toggle("TOP 후보 자동 재평가",value=True)
+    refresh_sec=st.select_slider("자동 재평가 주기(초)",options=[10,15,20,30,60],value=20)
+    focus_n=st.slider("집중 감시 후보 수",10,50,30,5)
+    refresh_batch=st.slider("회당 KIS 갱신 종목 수",3,15,8,1)
 
 if "scan" not in st.session_state: st.session_state.scan=pd.DataFrame()
+if "us_scan" not in st.session_state:st.session_state.us_scan=pd.DataFrame()
+if "last_live_refresh" not in st.session_state: st.session_state.last_live_refresh=None
+if auto_live and not st.session_state.get("watch_candidates",st.session_state.scan).empty and kis_configured():
+    try:
+        session_now=kr_market_session_safe()
+        if session_now!="CLOSED":
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=int(refresh_sec*1000),key="sungho_live_refresh")
+            watch=st.session_state.get("watch_candidates",st.session_state.scan)
+            watch=refresh_top_candidates_rate_safe(watch,focus_n,refresh_batch)
+            st.session_state.watch_candidates=watch
+            st.session_state.scan=watch[(watch["점수"]>=min_score)&(watch["거래대금"]>=min_value_eok*100_000_000)].copy()
+            st.session_state.last_live_refresh=dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+    except Exception:
+        pass
 
 if st.button("🔄 데이터 캐시 초기화", use_container_width=True):
     st.cache_data.clear()
@@ -327,6 +1515,12 @@ if st.button("🚀 지금 스캔",type="primary",use_container_width=True):
         try:
             result = run_scan(markets, per_market, min_value_eok*100_000_000, min_score)
             st.session_state.scan = result
+            if include_us:st.session_state.us_scan=run_us_scan(us_symbols,min_score)
+            if not result.empty:
+                try:
+                    save_scan_snapshot(result, scan_type="manual_market_scan")
+                except Exception:
+                    pass
             if result.empty:
                 status.warning("⚠️ 스캔은 정상 완료됐지만 현재 조건을 통과한 후보가 없습니다. 최소 점수나 거래대금을 낮춰보세요.")
             else:
@@ -335,22 +1529,38 @@ if st.button("🚀 지금 스캔",type="primary",use_container_width=True):
             status.error(f"❌ 스캔 오류: {type(e).__name__}: {e}")
             st.exception(e)
 
+with st.expander("🌎 지수·선물·환율",expanded=False):
+    if st.button("시장 지표 갱신",use_container_width=True):st.session_state.macro=macro_snapshot()
+    if "macro" in st.session_state:st.dataframe(st.session_state.macro,hide_index=True,use_container_width=True)
+    st.caption("지수·환율·유가 데이터의 기준일을 확인하세요. 미연결 선물은 점수에 사용하지 않습니다.")
+
+with st.expander("🇺🇸 미국 단타·스윙·장기 후보",expanded=False):
+    if not st.session_state.us_scan.empty:
+        st.dataframe(st.session_state.us_scan[["종목","단타점수","스윙점수","장기점수","현재가","매수하단","매수상단","손절가","1차목표","2차목표","상태"]] if "현재가" in st.session_state.us_scan else st.session_state.us_scan,hide_index=True,use_container_width=True)
+    else:st.info("스캔 실행 후 미국 관심종목 결과가 표시됩니다.")
+    st.caption("미국 가격 단위 USD · 한국 순위와 별도 비교 · 거래소 시세 지연 여부 미검증")
+
 df=st.session_state.scan
 
 if not df.empty:
+    if st.session_state.last_live_refresh:
+        st.caption(f"🔄 TOP {focus_n} 자동 재평가: {st.session_state.last_live_refresh:%H:%M:%S} KST · {refresh_sec}초 주기")
+    elif auto_live:
+        st.caption("🟡 자동 재평가 대기 — KIS 연결/첫 스캔 후 활성화")
     top=df.head(10)
     st.subheader("🔥 TOP 10")
     for _,r in top.iterrows():
         with st.container(border=True):
             c1,c2,c3=st.columns([2.1,1,1])
             c1.markdown(f"**{r['종목']}**  \n`{r['코드']}` · {r['셋업']}")
-            c2.metric("점수",f"{r['점수']}")
+            c2.metric("단타점수",f"{r.get('실시간단타점수',r.get('단타점수',r['점수']))}")
             c3.metric("등락",f"{r['등락%']}%")
-            st.caption(f"거래량 {r['거래량x']}x · RSI {r['RSI']} · 20일선 이격 {r['20일이격%']}%")
+            freshness="최근 KIS 수신" if data_confidence(r)!="DAILY/DELAYED" else "일봉/지연"
+            st.caption(f"{r.get('상태','-')} · {r.get('데이터신뢰도','-')} · 가격:{freshness} · 거래량 {r['거래량x']}x · RSI {r['RSI']} · 20일선 이격 {r['20일이격%']}%")
             st.caption(r["체크"])
 
     st.subheader("📋 전체 후보")
-    mobile_cols=["종목","점수","셋업","종가","등락%","매수하단","매수상단","손절가","1차목표","2차목표","거래량x","RSI"]
+    mobile_cols=["종목","실시간단타점수","스윙점수","장기점수","상태","데이터신뢰도","분석무결성","종가","등락%","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","거래량x","RSI"]
     st.dataframe(df[mobile_cols],hide_index=True,use_container_width=True)
 
     st.subheader("🔎 상세 분석")
@@ -364,7 +1574,75 @@ if not df.empty:
         h["MA5"]=h["종가"].rolling(5).mean()
         h["MA20"]=h["종가"].rolling(20).mean()
         h["MA60"]=h["종가"].rolling(60).mean()
-        st.line_chart(h[["종가","MA5","MA20","MA60"]].dropna())
+
+        h=decorate_chart(h)
+        st.caption("20일선: 주황 · 5일선: 파랑 · 60일선: 초록")
+        st.line_chart(h[["종가","MA5","MA20","MA60"]].dropna(),color=["#d9d9d9","#4c78a8","#ff9800","#4caf50"])
+        st.line_chart(h[["종가","BB_UPPER","BB_LOWER"]].dropna())
+        st.line_chart(h[["MACD","MACD_SIGNAL","MACD_OSC"]].dropna())
+        st.line_chart(h[["RSI"]].dropna())
+        st.bar_chart(h[["거래량"]])
+
+    with st.expander("KIS 당일 분봉",expanded=False):
+        if st.button("분봉 갱신",key=f"minute_{t}",use_container_width=True):
+            minutes=kis_minute_history(t)
+            if not minutes.empty:
+                chart=decorate_chart(minutes)
+                st.line_chart(chart[["종가","MA20","BB_UPPER","BB_LOWER"]])
+                st.line_chart(chart[["MACD","MACD_SIGNAL","MACD_OSC"]])
+                st.caption("당일 최근 최대 30개 분봉 · 20분 이동평균선은 일봉의 20일선과 다릅니다.")
+            else:st.warning("분봉 실데이터를 받지 못했습니다.")
+    st.subheader("⚡ KIS LIVE")
+    q=kis_quote(t)
+    ob=kis_orderbook(t)
+    if q:
+        l1,l2,l3=st.columns(3)
+        l1.metric("KIS 현재가",f"{int(q['현재가']):,}원",f"{q['장중등락%']:.2f}%")
+        l2.metric("누적 거래량",f"{int(q['장중거래량']):,}")
+        l3.metric("누적 거래대금",f"{int(q['장중거래대금']/100_000_000):,}억")
+    if ob:
+        o1,o2,o3=st.columns(3)
+        o1.metric("매수1",f"{int(ob['매수1']):,}원")
+        o2.metric("매도1",f"{int(ob['매도1']):,}원")
+        denom=ob["총매도잔량"]+ob["총매수잔량"]
+        pressure=(ob["총매수잔량"]/denom*100) if denom else 0
+        o3.metric("매수잔량 비중",f"{pressure:.1f}%")
+        st.caption(f"총매수잔량 {int(ob['총매수잔량']):,} · 총매도잔량 {int(ob['총매도잔량']):,}")
+
+    inv=kis_investor(t)
+    if not inv.empty:
+        st.markdown("**외국인·기관 수급 (KIS 제공 확정 데이터)**")
+        latest=inv.iloc[0]
+        i1,i2,i3=st.columns(3)
+        i1.metric("외국인 순매수",f"{int(latest['외국인']):,}주")
+        i2.metric("기관 순매수",f"{int(latest['기관']):,}주")
+        i3.metric("개인 순매수",f"{int(latest['개인']):,}주")
+        st.caption("※ KIS 공식 안내상 종목별 투자자 당일 데이터는 장 종료 후 제공됩니다.")
+
+    if websocket_capability():
+        tape=live_tape()
+        wc1,wc2=st.columns(2)
+        if wc1.button("▶ 실시간 체결·호가 시작",use_container_width=True,key=f"ws_start_{t}"):
+            if kis_configured():
+                tape.start(t,st.secrets["KIS_APP_KEY"],st.secrets["KIS_APP_SECRET"],kis_market_code())
+            else: st.warning("기존 KIS 인증정보를 읽을 수 없습니다.")
+            time.sleep(.7)
+        if wc2.button("■ 실시간 중지",use_container_width=True,key=f"ws_stop_{t}"):
+            tape.stop()
+        snap,connected,wserr=tape.snapshot()
+        st.caption(("🟢 WebSocket 연결 중" if connected else "⚪ WebSocket 대기") +
+                   (f" · {wserr}" if wserr else ""))
+        if snap and tape.code==str(t).zfill(6):
+            w1,w2,w3=st.columns(3)
+            w1.metric("실시간 체결가",f"{int(snap.get('현재가',0)):,}원",
+                      f"{snap.get('등락%',0):.2f}%")
+            w2.metric("체결강도",f"{snap.get('체결강도',0):.1f}")
+            w3.metric("실시간 거래량",f"{int(snap.get('누적거래량',0)):,}")
+            st.caption(f"체결 {snap.get('체결시간','-')} · 매수1 {int(snap.get('매수1',0)):,} · 매도1 {int(snap.get('매도1',0)):,}")
+            if st.button("↻ 실시간 화면 갱신",use_container_width=True,key=f"ws_refresh_{t}"):
+                st.rerun()
+    else:
+        st.info("WebSocket 실시간 스트리밍을 켜려면 requirements.txt에 websocket-client를 추가하세요.")
 
     a,b=st.columns(2)
     a.metric("종가",f"{int(row['종가']):,}원",f"{row['등락%']}%")
@@ -373,6 +1651,15 @@ if not df.empty:
     c,d=st.columns(2)
     c.metric("매수 구간",f"{int(row['매수하단']):,}~{int(row['매수상단']):,}원")
     d.metric("손절가",f"{int(row['손절가']):,}원")
+    with st.expander("💰 포지션 위험 계산",expanded=False):
+        account_cash=st.number_input("이 계좌 운용금액(원)",min_value=0,value=100_000_000,step=1_000_000,key=f"cash_{t}")
+        risk_pct=st.slider("1회 최대 계좌손실(%)",0.1,2.0,0.5,0.1,key=f"risk_{t}")/100
+        max_pos=st.slider("종목 최대 비중(%)",5,50,15,5,key=f"pos_{t}")/100
+        plan=position_plan(float(row["매수상단"]),float(row["손절가"]),account_cash,risk_pct,max_pos)
+        p1,p2,p3=st.columns(3)
+        p1.metric("최대 수량",f"{int(plan['수량']):,}주")
+        p2.metric("예상 투입금",f"{int(plan['투입금']):,}원")
+        p3.metric("계획 최대손실",f"{int(plan['최대손실']):,}원")
     e,f=st.columns(2)
     e.metric("1차 목표",f"{int(row['1차목표']):,}원")
     f.metric("2차 목표",f"{int(row['2차목표']):,}원")
@@ -386,4 +1673,89 @@ if not df.empty:
 else:
     st.info("위의 **지금 스캔** 버튼을 누르면 후보 종목이 표시됩니다.")
 
-st.caption("v4: 병렬 스캔 + 30초 캐시 + 매수/손절/목표가. KIS 키가 연결되면 상위 후보의 장중 현재가를 다시 반영합니다. 실시간 수급/호가 전체 스캔은 증권사 WebSocket 연결이 필요합니다.")
+with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
+    st.dataframe(deployment_self_test(),hide_index=True,use_container_width=True)
+    ready_df,static_ready=release_readiness()
+    st.markdown("**릴리스 준비상태**")
+    st.dataframe(ready_df,hide_index=True,use_container_width=True)
+    if st.button("WebSocket 검증 연결 시작 (삼성전자)",use_container_width=True):
+        if kis_configured():live_tape().start("005930",secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
+        else:st.warning("배포된 앱의 KIS 설정을 읽을 수 없습니다.")
+    tape_data,tape_connected,tape_error=live_tape().snapshot()
+    st.caption("WS 소켓: "+str(tape_connected)+" · 수신 체결/호가/프로그램: "+str([bool(tape_data.get(k)) for k in ["trade_received_utc","book_received_utc","program_received_utc"]]))
+    if tape_error:st.warning(tape_error)
+    if st.button("🔌 KIS 라이브 최종 테스트",use_container_width=True):
+        gate_df,sok,lok,lmsg=live_release_gate()
+        st.dataframe(gate_df,hide_index=True,use_container_width=True)
+        if sok and lok: st.success("검증 완료: 모든 필수 증거 확인")
+        else: st.warning(lmsg)
+    st.caption("감시 모집단: "+str(len(st.session_state.get("watch_candidates",st.session_state.scan)))+"개 · 이전 후보 밖 종목도 순환 갱신")
+    st.caption("공시/뉴스 연결상태: "+str(disclosure_feed_status())+" · DART매핑: "+str(dart_corp_map_status()))
+    st.caption("뉴스피드 상태: "+str(news_feed_status())+" · KRX휴장캘린더: "+str(krx_holiday_status()))
+    holidayfile=st.file_uploader("KRX 휴장일 CSV (date)",type=["csv"],key="krx_holidays_upload")
+    if holidayfile is not None and st.button("KRX 휴장일 적용",use_container_width=True):
+        if load_krx_holidays_csv(holidayfile.getvalue()): st.success("KRX 휴장일 캘린더 적용 완료")
+        else: st.error("휴장일 CSV 형식을 확인해 주세요.")
+    if st.button("공시·뉴스 자동 연결 점검",use_container_width=True):
+        ensure_dart_map()
+        refresh_news_candidates(pd.DataFrame([{"코드":"005930","종목":"삼성전자"}]))
+        st.write(st.session_state.get("feed_diagnostics",{}))
+    st.caption("뉴스 자동 수집: NAVER_CLIENT_ID·NAVER_CLIENT_SECRET이 설정되면 실행. CSV 피드도 계속 지원합니다.")
+    evidence=st.file_uploader("외부 배포 검증 증거 JSON",type=["json"],key="deploy_evidence")
+    if evidence is not None and st.button("배포 검증 증거 적용",use_container_width=True):
+        try:
+            st.session_state.deploy_attestation=json.loads(evidence.getvalue())
+            st.success("증거 적용" if deployment_attestation_valid() else "이 빌드와 일치하는 배포 증거가 아닙니다.")
+        except Exception:st.warning("검증 증거 JSON 형식을 확인하세요.")
+    newsfile=st.file_uploader("신뢰 가능한 뉴스피드 CSV (title 필수)",type=["csv"],key="news_feed")
+    if newsfile is not None and st.button("뉴스피드 적용",use_container_width=True):
+        if load_news_feed_csv(newsfile.getvalue()):
+            st.success("뉴스피드 적용 완료")
+        else:
+            st.error("뉴스피드 CSV 형식을 확인해 주세요.")
+    corpmap=st.file_uploader("DART 종목코드 매핑 CSV (stock_code, corp_code)",type=["csv"],key="dart_map")
+    if corpmap is not None and st.button("DART 매핑 적용",use_container_width=True):
+        if load_dart_corp_map_csv(corpmap.getvalue()):
+            st.success("DART 종목코드 매핑 적용 완료")
+        else:
+            st.error("매핑 CSV 형식을 확인해 주세요.")
+    if st.button("📊 저장된 신호 성적검증",use_container_width=True):
+        from performance import evaluate_snapshots
+        if AUDIT_FILE.exists():
+            history=pd.read_csv(AUDIT_FILE,dtype={"code":str})
+            histories={}
+            for code in history["code"].dropna().unique()[:50]:
+                signals=history[history["code"]==code]
+                begin=pd.to_datetime(signals["scan_time_utc"],utc=True).min().date()
+                histories[str(code).zfill(6)]=prices(str(code).zfill(6),begin.isoformat(),dt.date.today().isoformat())
+            evaluated=evaluate_snapshots(history,histories)
+            evaluated["signal_day"]=pd.to_datetime(evaluated["scan_time_utc"],utc=True).dt.tz_convert("Asia/Seoul").dt.date.astype(str)
+            evaluated=evaluated.drop_duplicates(["code","signal_day"],keep="first")
+            summary=audit_summary(evaluated)
+            st.session_state.performance_verified=(len(evaluated.get("d5_ret",pd.Series(dtype=float)).dropna())>=30)
+            st.session_state.performance_verified_build=build_id()
+            st.dataframe(summary,use_container_width=True)
+            st.download_button("검증 성적 CSV",evaluated.to_csv(index=False).encode("utf-8-sig"),file_name="evaluated_signals.csv")
+            st.caption("신호 다음 거래일부터 평가 · 비용 20bp · 같은 일봉에서 손절/목표 모두 도달하면 손절 우선. 일봉 근사이며 체결 수익이 아닙니다.")
+        else:
+            st.warning("검증할 저장 신호가 없습니다.")
+    historical_code=st.text_input("과거 검증 종목코드",value="005930",key="historical_code")
+    if st.button("과거 일봉 워크포워드 검증",use_container_width=True):
+        from performance import walk_forward
+        end=business_day();begin=end-dt.timedelta(days=365)
+        bars=prices(historical_code,begin.isoformat(),end.isoformat())
+        result=walk_forward(bars,historical_code,lambda h:analyze(historical_code,historical_code,h),min_score=min_score) if len(bars)>=65 else pd.DataFrame()
+        if not result.empty:
+            st.dataframe(audit_summary(result),use_container_width=True)
+            st.download_button("과거 검증 CSV",result.to_csv(index=False).encode("utf-8-sig"),file_name="walk_forward.csv")
+            st.caption("과거 일봉 기준 · 다음 시가가 매수구간 내일 때 진입 가정 · 겹치는 독립 시나리오 · 실제 체결 성적 아님")
+        else:st.warning("충분한 데이터 또는 조건에 맞는 과거 시나리오가 없습니다.")
+    audit_bytes=audit_export_bytes()
+    if audit_bytes:
+        st.download_button("성적기록 백업 다운로드",audit_bytes,file_name="sungho_audit.csv",mime="text/csv",use_container_width=True)
+    uploaded=st.file_uploader("성적기록 복원 CSV",type=["csv"],key="audit_restore")
+    if uploaded is not None and st.button("성적기록 복원",use_container_width=True):
+        if audit_restore_bytes(uploaded.getvalue()):
+            st.success("성적기록을 복원했습니다.")
+
+st.caption("ULTIMATE: 기술 스캔 + KIS 현재가/호가 + 확정 투자자 수급 + 선택 종목 WebSocket + 전략별 재점수 + 위험관리 + 감사로그. 자동주문은 안전상 분리되어 있습니다.")
