@@ -12,6 +12,8 @@ import time
 import threading
 import hashlib
 import uuid
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from feeds import dart_corporations, naver_news, FeedError
 from ws_protocol import parse_market_packet
 from scoring import overlay_quote, decorate_chart
@@ -26,6 +28,39 @@ except Exception:
 AUDIT_DIR = Path("scanner_audit") / st.session_state.setdefault("audit_owner",str(uuid.uuid4()))
 AUDIT_DIR.mkdir(parents=True,exist_ok=True)
 AUDIT_FILE = AUDIT_DIR / "scan_snapshots.csv"
+
+def candle_chart(history, title="", minute=False):
+    """Render real OHLC candles with aligned volume; keep early indicator NaNs."""
+    h=history.copy().sort_index()
+    required=["시가","고가","저가","종가"]
+    if not all(c in h for c in required):
+        raise ValueError("캔들에 필요한 시가·고가·저가·종가 데이터가 없습니다.")
+    h[required]=h[required].apply(pd.to_numeric,errors="coerce")
+    h=h.dropna(subset=required)
+    if h.empty:raise ValueError("유효한 캔들 데이터가 없습니다.")
+    x=h.index.strftime("%m-%d %H:%M" if minute else "%Y-%m-%d")
+    fig=make_subplots(rows=2,cols=1,shared_xaxes=True,
+                      row_heights=[.78,.22],vertical_spacing=.035)
+    fig.add_trace(go.Candlestick(x=x,open=h["시가"],high=h["고가"],low=h["저가"],close=h["종가"],
+        name="캔들",increasing_line_color="#e53935",increasing_fillcolor="#e53935",
+        decreasing_line_color="#1976d2",decreasing_fillcolor="#1976d2"),row=1,col=1)
+    for column,name,color in [("MA5","5일선","#8e44ad"),("MA20","20일선","#ff9800"),
+                               ("MA60","60일선","#4caf50"),("BB_UPPER","BB 상단","#90a4ae"),
+                               ("BB_LOWER","BB 하단","#90a4ae")]:
+        if column in h:
+            fig.add_trace(go.Scatter(x=x,y=h[column],name=name.replace("일선","분선") if minute else name,
+                mode="lines",line=dict(color=color,width=2.5 if column=="MA20" else 1),
+                connectgaps=False),row=1,col=1)
+    if "거래량" in h:
+        fig.add_trace(go.Bar(x=x,y=h["거래량"],name="거래량",showlegend=False,
+            marker_color=np.where(h["종가"]>=h["시가"],"#e53935","#1976d2")),row=2,col=1)
+    fig.update_layout(title=title,height=590,margin=dict(l=8,r=8,t=50,b=30),
+        legend=dict(orientation="h",y=1.08,x=0),hovermode="x unified",
+        xaxis_rangeslider_visible=False,dragmode="pan")
+    fig.update_xaxes(type="category",nticks=7,rangeslider_visible=False)
+    fig.update_yaxes(title_text="가격",fixedrange=False,row=1,col=1)
+    fig.update_yaxes(title_text="거래량",rangemode="tozero",row=2,col=1)
+    return fig
 
 def _safe_num(v, default=0.0):
     try:
@@ -1576,19 +1611,19 @@ if not df.empty:
         h["MA60"]=h["종가"].rolling(60).mean()
 
         h=decorate_chart(h)
-        st.caption("20일선: 주황 · 5일선: 파랑 · 60일선: 초록")
-        st.line_chart(h[["종가","MA5","MA20","MA60"]].dropna(),color=["#d9d9d9","#4c78a8","#ff9800","#4caf50"])
-        st.line_chart(h[["종가","BB_UPPER","BB_LOWER"]].dropna())
+        st.caption("캔들: 상승 빨강 · 하락 파랑 | 20일선: 주황 · 5일선: 보라 · 60일선: 초록 · BB: 회색")
+        st.plotly_chart(candle_chart(h,title=f"{label} 일봉"),use_container_width=True,
+                        config={"displaylogo":False,"scrollZoom":False})
         st.line_chart(h[["MACD","MACD_SIGNAL","MACD_OSC"]].dropna())
         st.line_chart(h[["RSI"]].dropna())
-        st.bar_chart(h[["거래량"]])
 
     with st.expander("KIS 당일 분봉",expanded=False):
         if st.button("분봉 갱신",key=f"minute_{t}",use_container_width=True):
             minutes=kis_minute_history(t)
             if not minutes.empty:
                 chart=decorate_chart(minutes)
-                st.line_chart(chart[["종가","MA20","BB_UPPER","BB_LOWER"]])
+                st.plotly_chart(candle_chart(chart,title=f"{label} 당일 분봉",minute=True),
+                                use_container_width=True,config={"displaylogo":False,"scrollZoom":False})
                 st.line_chart(chart[["MACD","MACD_SIGNAL","MACD_OSC"]])
                 st.caption("당일 최근 최대 30개 분봉 · 20분 이동평균선은 일봉의 20일선과 다릅니다.")
             else:st.warning("분봉 실데이터를 받지 못했습니다.")
