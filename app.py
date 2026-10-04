@@ -1210,13 +1210,20 @@ class KISLiveTape:
         with self.lock:
             return dict(self.data), self.connected, self.error
 
+    def diagnostics(self):
+        with self.lock:
+            return {"connected":self.connected,"approved_channels":sorted(self.acknowledged),
+                    "contract_code":self.code or "","reconnect_count":self.reconnect_count,"error":self.error}
+
     def stop(self):
         self.stop_event.set()
         if self.ws is not None:
             self.ws.close()
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=12)
-        self.connected=False
+        with self.lock:
+            self.connected=False
+            self.acknowledged.clear()
 
     def start(self, code, appkey, appsecret, market="UN"):
         code=str(code).zfill(6)
@@ -1267,7 +1274,10 @@ class KISLiveTape:
             return
 
         def on_open(ws):
-            self.connected=True
+            with self.lock:
+                self.connected=True
+                self.acknowledged.clear()
+                self.error=""
             for channel in channels:
                 ws.send(sub(channel))
                 time.sleep(.15)
@@ -1277,7 +1287,9 @@ class KISLiveTape:
             self.connected=False
 
         def on_close(ws, *args):
-            self.connected=False
+            with self.lock:
+                self.connected=False
+                self.acknowledged.clear()
 
         def on_message(ws, message):
             if self.stop_event.is_set():
@@ -1598,13 +1610,24 @@ def domestic_future_snapshot():
 def night_future_tape(session_id):
     return KISLiveTape()
 
+def night_future_status(data,diagnostics):
+    if diagnostics.get("error"):return diagnostics["error"]
+    if not diagnostics.get("connected"):return "소켓 미연결 · 실시간 미검증"
+    approved="H0MFCNT0" in diagnostics.get("approved_channels",[])
+    if not approved:return "소켓 연결 · 구독 승인 대기 · 실제 체결 미검증"
+    if not data:return "구독 승인 · 실제 체결 대기"
+    return "구독 승인 · 야간 체결 수신 · 거래일 미확인" if timestamp_fresh(data.get("수신시각")) else "구독 승인 · 과거 체결 · 최신 아님"
+
 def night_future_snapshot():
     tape=night_future_tape(st.session_state.setdefault("tape_session_id",str(uuid.uuid4())))
-    data,connected,error=tape.snapshot()
-    row={"지표":"국내 야간선물","상태":error or ("소켓 연결 · 실제 체결 대기" if connected else "야간 구독 시작 전")}
+    data,_,_=tape.snapshot()
+    diagnostics=tape.diagnostics()
+    row={"지표":"국내 야간선물","상태":night_future_status(data,diagnostics),
+         "계약코드":diagnostics["contract_code"],"구독승인":"H0MFCNT0" in diagnostics["approved_channels"],
+         "재연결횟수":diagnostics["reconnect_count"]}
     if data:
         row.update({"최근값":data["최근값"],"전일대비%":data["전일대비%"],"기준일":"체결시간 "+data["체결시간"]+" · 거래일 미확인",
-                    "수신시각":data["수신시각"],"상태":"야간 체결 수신 · 거래일 미확인" if timestamp_fresh(data["수신시각"]) else "과거 체결 · 최신 아님"})
+                    "수신시각":data["수신시각"]})
     return row
 
 def parse_index_quote(payload,label):
@@ -1690,6 +1713,8 @@ def market_sidebar():
                 st.markdown("**"+str(row["지표"])+"**")
                 st.write("값 없음 · 연결 미완료")
                 st.caption(str(row.get("상태","미수신")))
+                if row["지표"]=="국내 야간선물":
+                    st.caption("계약: "+str(row.get("계약코드",""))+" · 재연결: "+str(row.get("재연결횟수",0)))
 
 with st.sidebar:
     market_sidebar()
