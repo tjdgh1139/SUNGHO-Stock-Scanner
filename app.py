@@ -1176,6 +1176,22 @@ def websocket_capability():
     except Exception:
         return False
 
+def parse_futures_packet(message,expected_code):
+    parts=message.split("|",3)
+    if len(parts)!=4 or parts[0]!="0" or parts[1]!="H0MFCNT0":return []
+    count=int(parts[2]);fields=parts[3].split("^")
+    if count<1 or count>100 or len(fields)!=count*49:raise ValueError("invalid futures packet length")
+    out=[]
+    for n in range(count):
+        f=fields[n*49:(n+1)*49]
+        if f[0]!=expected_code:continue
+        price=float(f[5]);change=float(f[4])
+        if not np.isfinite(price) or price<=0 or not np.isfinite(change):raise ValueError("invalid futures price")
+        if len(f[1])!=6 or not f[1].isdigit():raise ValueError("invalid futures time")
+        out.append({"코드":f[0],"최근값":price,"전일대비%":change,"체결시간":f[1],
+                    "수신시각":pd.Timestamp.now(tz="UTC").isoformat()})
+    return out
+
 class KISLiveTape:
     """One-symbol KRX/NXT/unified trade, quote and program monitor with reconnect."""
     def __init__(self):
@@ -1245,7 +1261,7 @@ class KISLiveTape:
                 "body":{"input":{"tr_id":tr_id,"tr_key":code}}
             })
 
-        channels={"UN":("H0UNCNT0","H0UNASP0","H0UNPGM0"),"NX":("H0NXCNT0","H0NXASP0","H0NXPGM0"),"J":("H0STCNT0","H0STASP0","H0STPGM0")}.get(market)
+        channels={"UN":("H0UNCNT0","H0UNASP0","H0UNPGM0"),"NX":("H0NXCNT0","H0NXASP0","H0NXPGM0"),"J":("H0STCNT0","H0STASP0","H0STPGM0"),"NIGHT_FUTURE":("H0MFCNT0",)}.get(market)
         if channels is None:
             self.error="지원하지 않는 시장 코드"
             return
@@ -1272,7 +1288,7 @@ class KISLiveTape:
                 if not message:
                     return
                 if message[0] == "0":
-                    for upd in parse_market_packet(message):
+                    for upd in (parse_futures_packet(message,code) if market=="NIGHT_FUTURE" else parse_market_packet(message)):
                         if upd["코드"]==code:
                             with self.lock:self.data.update(upd)
                 else:
@@ -1540,6 +1556,57 @@ def run_us_scan(symbols,min_score):
     for label,source in [("매수하단","매수관심하단"),("매수상단","매수관심상단"),("손절가","손절기준"),("1차목표","1차익절"),("2차목표","2차익절")]:frame[label]=frame[source]
     return frame.sort_values(["단타점수","스윙점수"],ascending=False)
 
+def parse_futures_master(text):
+    contracts=[]
+    for line in text.splitlines():
+        f=[x.strip() for x in line.split("|")]
+        if len(f)!=9 or f[0]!="1" or f[7]!="2001" or f[8]!="KOSPI200":continue
+        if len(f[1])!=6 or not f[1].isalnum():continue
+        if not f[6].isdigit():continue
+        contracts.append({"code":f[1],"name":f[3],"rank":int(f[6])})
+    if not contracts:raise ValueError("KOSPI200 futures master empty")
+    return min(contracts,key=lambda x:x["rank"])
+
+@st.cache_data(ttl=3600,show_spinner=False)
+def current_kospi_future():
+    import io,zipfile
+    r=requests.get("https://new.real.download.dws.co.kr/common/master/fo_idx_code_mts.mst.zip",timeout=12)
+    r.raise_for_status()
+    if len(r.content)>8_000_000:raise ValueError("oversized master")
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        members=[x for x in z.infolist() if x.filename.endswith("fo_idx_code_mts.mst")]
+        if len(members)!=1 or members[0].file_size>20_000_000:raise ValueError("invalid master archive")
+        return parse_futures_master(z.read(members[0]).decode("cp949"))
+
+@st.cache_data(ttl=20,show_spinner=False)
+def domestic_future_snapshot():
+    label="국내선물"
+    try:
+        contract=current_kospi_future()
+        if not kis_configured():return {"지표":label,"상태":"KIS 키 미설정"}
+        payload=kis_chart_response(contract["code"],"/uapi/domestic-futureoption/v1/quotations/inquire-price","FHMIF10000000",
+            {"FID_COND_MRKT_DIV_CODE":"F","FID_INPUT_ISCD":contract["code"]})
+        o=payload.get("output1",{})
+        price=float(o.get("futs_prpr") or 0);change=float(o.get("futs_prdy_ctrt"))
+        if not np.isfinite(price) or price<=0 or not np.isfinite(change):raise ValueError("invalid futures response")
+        return {"지표":label,"최근값":price,"전일대비%":change,"기준일":contract["name"]+" · "+contract["code"],
+                "수신시각":pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S KST"),
+                "상태":"KIS 선물 REST 응답 · 거래시각 미확인"}
+    except Exception as exc:return {"지표":label,"상태":"선물 조회 실패 · "+type(exc).__name__}
+
+@st.cache_resource(show_spinner=False)
+def night_future_tape(session_id):
+    return KISLiveTape()
+
+def night_future_snapshot():
+    tape=night_future_tape(st.session_state.setdefault("tape_session_id",str(uuid.uuid4())))
+    data,connected,error=tape.snapshot()
+    row={"지표":"국내 야간선물","상태":error or ("소켓 연결 · 실제 체결 대기" if connected else "야간 구독 시작 전")}
+    if data:
+        row.update({"최근값":data["최근값"],"전일대비%":data["전일대비%"],"기준일":"체결시간 "+data["체결시간"]+" · 거래일 미확인",
+                    "수신시각":data["수신시각"],"상태":"야간 체결 수신 · 거래일 미확인" if timestamp_fresh(data["수신시각"]) else "과거 체결 · 최신 아님"})
+    return row
+
 def parse_index_quote(payload,label):
     if str(payload.get("rt_cd"))!="0":raise ValueError("index API response failed")
     o=payload.get("output",{})
@@ -1583,7 +1650,7 @@ def delayed_macro_snapshot():
 
 def macro_snapshot():
     daily=delayed_macro_snapshot()
-    live=kis_index_snapshot()
+    live=kis_index_snapshot()+[domestic_future_snapshot(),night_future_snapshot()]
     if live:
         labels={r["지표"] for r in live}
         return pd.concat([pd.DataFrame(live),daily[~daily["지표"].isin(labels)]],ignore_index=True)
@@ -1600,6 +1667,15 @@ def market_sidebar():
     if st.button("시장 지표 다시 조회",key="sidebar_macro_refresh"):
         delayed_macro_snapshot.clear()
         kis_index_snapshot.clear()
+        domestic_future_snapshot.clear()
+    if st.button("야간선물 구독 시작",key="start_night_future"):
+        try:
+            contract=current_kospi_future()
+            tape=night_future_tape(st.session_state.setdefault("tape_session_id",str(uuid.uuid4())))
+            tape.start(contract["code"],secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),market="NIGHT_FUTURE")
+        except Exception as exc:st.error("야간 구독 준비 실패 · "+type(exc).__name__)
+    if st.button("야간선물 구독 중지",key="stop_night_future"):
+        night_future_tape(st.session_state.setdefault("tape_session_id",str(uuid.uuid4()))).stop()
     frame=macro_snapshot()
     st.session_state.macro=frame
     for _,row in frame.iterrows():
