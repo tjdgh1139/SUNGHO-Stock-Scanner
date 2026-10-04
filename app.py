@@ -12,6 +12,7 @@ import time
 import threading
 import hashlib
 import uuid
+import html
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from feeds import dart_corporations, naver_news, FeedError
@@ -29,7 +30,7 @@ AUDIT_DIR = Path("scanner_audit") / st.session_state.setdefault("audit_owner",st
 AUDIT_DIR.mkdir(parents=True,exist_ok=True)
 AUDIT_FILE = AUDIT_DIR / "scan_snapshots.csv"
 
-def candle_chart(history, title="", minute=False):
+def candle_chart(history, title="", minute=False, currency="KRW"):
     """Render real OHLC candles with aligned volume; keep early indicator NaNs."""
     h=history.copy().sort_index()
     required=["시가","고가","저가","종가"]
@@ -58,9 +59,27 @@ def candle_chart(history, title="", minute=False):
         legend=dict(orientation="h",y=1.08,x=0),hovermode="x unified",
         xaxis_rangeslider_visible=False,dragmode="pan")
     fig.update_xaxes(type="category",nticks=7,rangeslider_visible=False)
-    fig.update_yaxes(title_text="가격",fixedrange=False,row=1,col=1)
+    if currency not in ("KRW","USD"):raise ValueError("unsupported currency")
+    fig.update_yaxes(title_text="가격 (원)" if currency=="KRW" else "가격 (USD)",
+                     tickformat=",.0f" if currency=="KRW" else ",.2f",
+                     tickprefix="" if currency=="KRW" else "$",ticksuffix="원" if currency=="KRW" else "",
+                     fixedrange=False,row=1,col=1)
     fig.update_yaxes(title_text="거래량",rangemode="tozero",row=2,col=1)
     return fig
+
+def change_color(value):
+    number=_safe_num(value)
+    return "#e53935" if number>0 else "#1976d2" if number<0 else "#757575"
+
+def colored_quote(label,value,change):
+    color=change_color(change)
+    st.markdown(f'<div style="border:1px solid #ddd;border-radius:12px;padding:10px"><small>{html.escape(str(label))}</small><br><span style="font-size:1.7rem;color:{color}">{html.escape(str(value))}</span><br><span style="color:{color}">{_safe_num(change):+.2f}%</span></div>',unsafe_allow_html=True)
+
+def styled_candidate_table(frame,currency="KRW"):
+    price_cols=[c for c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표") if c in frame]
+    style=frame.style.format({c:("{:,.0f}원" if currency=="KRW" else "${:,.2f}") for c in price_cols},na_rep="—")
+    if "등락%" in frame:style=style.map(lambda v:"color: "+change_color(v),subset=["등락%"])
+    return style
 
 def _safe_num(v, default=0.0):
     try:
@@ -1578,7 +1597,7 @@ def market_sidebar():
         value=row.get("최근값")
         if pd.notna(value) and np.isfinite(float(value)):
             delta=row.get("전일대비%")
-            st.metric(str(row["지표"]),f"{float(value):,.2f}",f"{float(delta):+.2f}%" if pd.notna(delta) else None,delta_color="off")
+            colored_quote(str(row["지표"]),f"{float(value):,.2f}",delta)
             st.caption(f"{row.get('기준일','')} · {row.get('상태','미확인')}")
             if pd.notna(row.get("수신시각")):st.caption("API 수신: "+str(row["수신시각"]))
         else:
@@ -1660,8 +1679,17 @@ with st.expander("🌎 지수·선물·환율",expanded=False):
 
 with st.expander("🇺🇸 미국 단타·스윙·장기 후보",expanded=False):
     if not st.session_state.us_scan.empty:
-        st.dataframe(st.session_state.us_scan[["종목","단타점수","스윙점수","장기점수","현재가","매수하단","매수상단","손절가","1차목표","2차목표","상태"]] if "현재가" in st.session_state.us_scan else st.session_state.us_scan,hide_index=True,use_container_width=True)
+        st.dataframe(styled_candidate_table(st.session_state.us_scan[["종목","단타점수","스윙점수","장기점수","현재가","매수하단","매수상단","손절가","1차목표","2차목표","상태"]] if "현재가" in st.session_state.us_scan else st.session_state.us_scan,"USD"),hide_index=True,use_container_width=True)
     else:st.info("스캔 실행 후 미국 관심종목 결과가 표시됩니다.")
+    if not st.session_state.us_scan.empty:
+        symbol=st.selectbox("미국 차트 종목",st.session_state.us_scan["코드"].astype(str).tolist(),key="us_chart_symbol")
+        if st.button("미국 캔들 차트 보기",key="show_us_candle"):
+            chart_end=dt.date.today()
+            history=prices(symbol,(chart_end-dt.timedelta(days=180)).isoformat(),chart_end.isoformat())
+            if history is not None and not history.empty:
+                st.plotly_chart(candle_chart(decorate_chart(history),title=symbol+" 일봉 · USD",currency="USD"),use_container_width=True)
+                st.caption("일봉/지연 · 가격 단위 USD")
+            else:st.warning("미국 일봉을 받지 못했습니다.")
     st.caption("미국 가격 단위 USD · 한국 순위와 별도 비교 · 거래소 시세 지연 여부 미검증")
 
 df=st.session_state.scan
@@ -1678,14 +1706,14 @@ if not df.empty:
             c1,c2,c3=st.columns([2.1,1,1])
             c1.markdown(f"**{r['종목']}**  \n`{r['코드']}` · {r['셋업']}")
             c2.metric("단타점수",f"{r.get('실시간단타점수',r.get('단타점수',r['점수']))}")
-            c3.metric("등락",f"{r['등락%']}%")
+            with c3:colored_quote("등락",f"{r['등락%']}%",r["등락%"])
             freshness="최근 KIS 수신" if data_confidence(r)!="DAILY/DELAYED" else "일봉/지연"
             st.caption(f"{r.get('상태','-')} · {r.get('데이터신뢰도','-')} · 가격:{freshness} · 거래량 {r['거래량x']}x · RSI {r['RSI']} · 20일선 이격 {r['20일이격%']}%")
             st.caption(r["체크"])
 
     st.subheader("📋 전체 후보")
     mobile_cols=["종목","실시간단타점수","스윙점수","장기점수","상태","데이터신뢰도","분석무결성","종가","등락%","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","거래량x","RSI"]
-    st.dataframe(df[mobile_cols],hide_index=True,use_container_width=True)
+    st.dataframe(styled_candidate_table(df[mobile_cols],"KRW"),hide_index=True,use_container_width=True)
 
     st.subheader("🔎 상세 분석")
     opts={f"{r['종목']} ({r['코드']})":r["코드"] for _,r in df.iterrows()}
@@ -1721,7 +1749,7 @@ if not df.empty:
     ob=kis_orderbook(t)
     if q:
         l1,l2,l3=st.columns(3)
-        l1.metric("KIS 현재가",f"{int(q['현재가']):,}원",f"{q['장중등락%']:.2f}%")
+        with l1:colored_quote("KIS 현재가",f"{int(q['현재가']):,}원",q['장중등락%'])
         l2.metric("누적 거래량",f"{int(q['장중거래량']):,}")
         l3.metric("누적 거래대금",f"{int(q['장중거래대금']/100_000_000):,}억")
     if ob:
