@@ -1188,6 +1188,7 @@ def parse_futures_packet(message,expected_code):
         price=float(f[5]);change=float(f[4])
         if not np.isfinite(price) or price<=0 or not np.isfinite(change):raise ValueError("invalid futures price")
         if len(f[1])!=6 or not f[1].isdigit():raise ValueError("invalid futures time")
+        if int(f[1][:2])>23 or int(f[1][2:4])>59 or int(f[1][4:])>59:raise ValueError("invalid futures time")
         out.append({"코드":f[0],"최근값":price,"전일대비%":change,"체결시간":f[1],
                     "수신시각":pd.Timestamp.now(tz="UTC").isoformat()})
     return out
@@ -1200,6 +1201,7 @@ class KISLiveTape:
         self.thread=None
         self.ws=None
         self.code=None
+        self.market=None
         self.data={}
         self.error=""
         self.connected=False
@@ -1227,7 +1229,7 @@ class KISLiveTape:
 
     def start(self, code, appkey, appsecret, market="UN"):
         code=str(code).zfill(6)
-        if self.thread and self.thread.is_alive() and self.code==code:
+        if self.thread and self.thread.is_alive() and self.code==code and self.market==market:
             return
         self.stop()
         if self.thread and self.thread.is_alive():
@@ -1235,6 +1237,8 @@ class KISLiveTape:
             return
         self.stop_event=threading.Event()
         self.code=code
+        self.market=market
+        self.reconnect_count=0
         self.data={}
         self.acknowledged=set()
         self.error=""
@@ -1283,8 +1287,9 @@ class KISLiveTape:
                 time.sleep(.15)
 
         def on_error(ws, err):
-            self.error=f"WebSocket 오류: {type(err).__name__}"
-            self.connected=False
+            with self.lock:
+                self.error=f"WebSocket 오류: {type(err).__name__}"
+                self.connected=False
 
         def on_close(ws, *args):
             with self.lock:
@@ -1325,11 +1330,19 @@ class KISLiveTape:
                 on_error=on_error,on_close=on_close)
             self.ws=ws
             delay=1
+            failures=0
             while not self.stop_event.is_set():
+                started=time.monotonic()
                 ws.run_forever(ping_interval=None)
-                self.connected=False
+                with self.lock:self.connected=False
+                if self.stop_event.is_set():break
+                # A stable connection resets the consecutive failure budget.
+                failures=1 if time.monotonic()-started>=60 else failures+1
+                if failures>=5:
+                    with self.lock:self.error="연결 5회 연속 실패 · 자동 재접속 중지 · 다시 시작 필요"
+                    break
                 if self.stop_event.wait(delay):break
-                self.reconnect_count+=1
+                with self.lock:self.reconnect_count+=1
                 delay=min(delay*2,30)
         except Exception as e:
             self.error=f"WebSocket 연결: {type(e).__name__}"
