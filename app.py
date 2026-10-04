@@ -842,7 +842,7 @@ st.set_page_config(
     page_title="SUNGHO Scanner",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="auto"
 )
 
 st.markdown("""
@@ -1527,7 +1527,33 @@ def macro_snapshot():
                          "기준일":str(series.index[-1]),"상태":"일별·지연"})
         except Exception as exc:rows.append({"지표":label,"상태":"미수신 · "+type(exc).__name__})
     rows.extend([{"지표":"국내선물","상태":"KIS 선물 종목·계약코드 연결 필요"},{"지표":"국내 야간선물","상태":"야간시장 공급자 연결 필요"}])
+    rows.extend([{"지표":label,"상태":"실시간 공급자·현재 계약 연결 필요"} for label in ("NASDAQ100 선물","S&P500 선물","WTI 선물")])
     return pd.DataFrame(rows)
+
+@st.fragment(run_every=300)
+def market_sidebar():
+    st.subheader("🌎 시장 흐름")
+    enabled=st.toggle("시장 지표 표시·자동 갱신",value=False,key="market_panel_enabled")
+    st.caption("실시간 연결 검증 전 · 현재 공급값은 일별/지연. 자동 조회는 앱을 열어 둔 동안 5분마다 실행됩니다.")
+    if not enabled:
+        st.caption("코스피·코스닥·나스닥·SOX·유가·금리·환율과 선물 연결 상태")
+        return
+    if st.button("시장 지표 다시 조회",key="sidebar_macro_refresh"):
+        macro_snapshot.clear()
+    frame=macro_snapshot()
+    st.session_state.macro=frame
+    for _,row in frame.iterrows():
+        value=row.get("최근값")
+        if pd.notna(value) and np.isfinite(float(value)):
+            delta=row.get("전일대비%")
+            st.metric(str(row["지표"]),f"{float(value):,.2f}",f"{float(delta):+.2f}%" if pd.notna(delta) else None,delta_color="off")
+            st.caption(f"{row.get('기준일','')} · {row.get('상태','미확인')}")
+        else:
+            st.write(str(row["지표"]))
+            st.caption(str(row.get("상태","미수신")))
+
+with st.sidebar:
+    market_sidebar()
 
 st.title("📈 SUNGHO Scanner")
 st.caption("iPhone/PC 한국주식 단타·스윙 후보 스캐너 · RC15 검증 진행 중 · 빌드 "+build_id())
