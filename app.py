@@ -369,7 +369,17 @@ def integrity_status(row):
         return "데이터격리:" + ",".join(check["issues"])
     c=source_coverage(row)
     missing=[k for k,v in c.items() if not v]
-    return "정상" if not missing else "미연결:" + ",".join(missing)
+    dart_status=str(row.get("공시조회상태",""))
+    notes=[]
+    if dart_status in ("PASS","NO_DISCLOSURES"):
+        missing=[k for k in missing if k!="공시"]
+        if not c["공시"]:notes.append("공시:최근2일 없음")
+    elif dart_status:
+        missing=[k for k in missing if k!="공시"]
+        labels={"NOT_QUERIED":"미조회","NO_MAPPING":"종목매핑 없음","NOT_CONFIGURED":"키 미설정","API_ERROR":"API 오류","REQUEST_ERROR":"요청 실패"}
+        notes.append("공시:"+labels.get(dart_status,"조회 미확인"))
+    base="정상" if not missing else "미연결:" + ",".join(missing)
+    return " · ".join([base]+notes)
 
 
 # ============================================================
@@ -499,7 +509,8 @@ def cached_dart_disclosures(stock_code, days=2, ttl_seconds=300):
     hit=_DART_CACHE.get(key)
     if hit and now-hit["time"]<ttl_seconds:return hit["data"]
     data=dart_recent_disclosures(corp,days=days,max_count=20)
-    _DART_CACHE[key]={"time":now,"data":data}
+    status=st.session_state.get("feed_diagnostics",{}).get("DART_DISCLOSURES",{}).get("status","UNKNOWN")
+    _DART_CACHE[key]={"time":now,"data":data,"status":status}
     return data
 
 def attach_disclosure_evidence(df, top_n=30, days=2):
@@ -511,11 +522,14 @@ def attach_disclosure_evidence(df, top_n=30, days=2):
     if "실시간단타점수" in out.columns:
         out["실시간단타점수"]=pd.to_numeric(out["실시간단타점수"],errors="coerce").fillna(0).astype(float)
     out["공시근거"]=""
+    out["공시조회상태"]="NOT_QUERIED"
     limit=min(max(int(top_n),0),len(out))
     for idx in out.head(limit).index:
         r=out.loc[idx]
         code=r.get("코드",r.get("Code",""))
         items=cached_dart_disclosures(code,days=days)
+        hit=_DART_CACHE.get((str(code).zfill(6),int(days)),{})
+        out.at[idx,"공시조회상태"]=hit.get("status","NO_MAPPING" if not dart_corp_code(code) else "UNKNOWN")
         z=catalyst_bundle(items)
         out.at[idx,"공시점수"]=z["score"]
         out.at[idx,"공시건수"]=z["count"]
@@ -769,6 +783,7 @@ def attach_all_evidence(frame):
     # Called after a new base score; reset all catalyst increments to prevent accumulation.
     for column in ["공시점수","공시건수","뉴스점수","뉴스건수"]:out[column]=0.0
     if ensure_dart_map():out=attach_disclosure_evidence(out,top_n=10)
+    else:out["공시조회상태"]="NOT_CONFIGURED" if not secret_value("DART_API_KEY") else "NO_MAPPING"
     refresh_news_candidates(out)
     if news_feed_status().get("ready"):out=attach_news_evidence(out,top_n=10)
     out["분석무결성"]=[integrity_status(r.to_dict()) for _,r in out.iterrows()]
