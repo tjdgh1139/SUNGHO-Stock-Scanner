@@ -1512,8 +1512,31 @@ def run_us_scan(symbols,min_score):
     for label,source in [("매수하단","매수관심하단"),("매수상단","매수관심상단"),("손절가","손절기준"),("1차목표","1차익절"),("2차목표","2차익절")]:frame[label]=frame[source]
     return frame.sort_values(["단타점수","스윙점수"],ascending=False)
 
+def parse_index_quote(payload,label):
+    if str(payload.get("rt_cd"))!="0":raise ValueError("index API response failed")
+    o=payload.get("output",{})
+    value=float(o.get("bstp_nmix_prpr") or 0)
+    change=float(o.get("bstp_nmix_prdy_ctrt"))
+    if not np.isfinite(value) or value<=0 or not np.isfinite(change):raise ValueError("invalid index quote")
+    return {"지표":label,"최근값":value,"전일대비%":change,
+            "기준일":"공급 기준시각 미확인","수신시각":pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S KST"),
+            "상태":"KIS 현재지수 응답 · 거래시각 미확인"}
+
+@st.cache_data(ttl=20,show_spinner=False)
+def kis_index_snapshot():
+    if not kis_configured():return []
+    rows=[]
+    for label,code in (("KOSPI","0001"),("KOSDAQ","1001"),("KOSPI200","2001")):
+        try:
+            payload=kis_chart_response(code,"/uapi/domestic-stock/v1/quotations/inquire-index-price","FHPUP02100000",
+                                       {"FID_COND_MRKT_DIV_CODE":"U","FID_INPUT_ISCD":code})
+            rows.append(parse_index_quote(payload,label))
+        except Exception as exc:
+            rows.append({"지표":label,"상태":"KIS 미수신 · "+type(exc).__name__})
+    return rows
+
 @st.cache_data(ttl=300,show_spinner=False)
-def macro_snapshot():
+def delayed_macro_snapshot():
     registry={"KOSPI":"KS11","KOSDAQ":"KQ11","KOSPI200":"KS200","NASDAQ":"IXIC","S&P500":"S&P500",
               "SOX":"YAHOO:^SOX","달러/원":"USD/KRW","브렌트유 선물":"BZ=F","미국10년금리":"US10YT"}
     rows=[];end=dt.date.today();start=end-dt.timedelta(days=30)
@@ -1524,22 +1547,31 @@ def macro_snapshot():
             series=pd.to_numeric(series,errors="coerce").dropna()
             if len(series)<2:raise ValueError("insufficient observations")
             rows.append({"지표":label,"최근값":float(series.iloc[-1]),"전일대비%":round((series.iloc[-1]/series.iloc[-2]-1)*100,2),
-                         "기준일":str(series.index[-1]),"상태":"일별·지연"})
+                         "기준일":str(series.index[-1]),"상태":"과거값 · 최신 아님" if (pd.Timestamp.now(tz="UTC").date()-pd.Timestamp(series.index[-1]).date()).days>5 else "일별·지연"})
         except Exception as exc:rows.append({"지표":label,"상태":"미수신 · "+type(exc).__name__})
     rows.extend([{"지표":"국내선물","상태":"KIS 선물 종목·계약코드 연결 필요"},{"지표":"국내 야간선물","상태":"야간시장 공급자 연결 필요"}])
     rows.extend([{"지표":label,"상태":"실시간 공급자·현재 계약 연결 필요"} for label in ("NASDAQ100 선물","S&P500 선물","WTI 선물")])
     return pd.DataFrame(rows)
 
-@st.fragment(run_every=300)
+def macro_snapshot():
+    daily=delayed_macro_snapshot()
+    live=kis_index_snapshot()
+    if live:
+        labels={r["지표"] for r in live}
+        return pd.concat([pd.DataFrame(live),daily[~daily["지표"].isin(labels)]],ignore_index=True)
+    return daily
+
+@st.fragment(run_every=20)
 def market_sidebar():
     st.subheader("🌎 시장 흐름")
     enabled=st.toggle("시장 지표 표시·자동 갱신",value=False,key="market_panel_enabled")
-    st.caption("실시간 연결 검증 전 · 현재 공급값은 일별/지연. 자동 조회는 앱을 열어 둔 동안 5분마다 실행됩니다.")
+    st.caption("실시간 연결 검증 전 · 국내지수 KIS는 20초마다 조회. 해외는 일별/지연 · 수신시각과 공급 기준시각은 다릅니다.")
     if not enabled:
         st.caption("코스피·코스닥·나스닥·SOX·유가·금리·환율과 선물 연결 상태")
         return
     if st.button("시장 지표 다시 조회",key="sidebar_macro_refresh"):
-        macro_snapshot.clear()
+        delayed_macro_snapshot.clear()
+        kis_index_snapshot.clear()
     frame=macro_snapshot()
     st.session_state.macro=frame
     for _,row in frame.iterrows():
@@ -1548,6 +1580,7 @@ def market_sidebar():
             delta=row.get("전일대비%")
             st.metric(str(row["지표"]),f"{float(value):,.2f}",f"{float(delta):+.2f}%" if pd.notna(delta) else None,delta_color="off")
             st.caption(f"{row.get('기준일','')} · {row.get('상태','미확인')}")
+            if pd.notna(row.get("수신시각")):st.caption("API 수신: "+str(row["수신시각"]))
         else:
             st.write(str(row["지표"]))
             st.caption(str(row.get("상태","미수신")))
