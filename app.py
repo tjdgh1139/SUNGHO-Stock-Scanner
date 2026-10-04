@@ -73,7 +73,7 @@ def change_color(value):
 
 def colored_quote(label,value,change):
     color=change_color(change)
-    st.markdown(f'<div style="border:1px solid #ddd;border-radius:12px;padding:10px"><small>{html.escape(str(label))}</small><br><span style="font-size:1.7rem;color:{color}">{html.escape(str(value))}</span><br><span style="color:{color}">{_safe_num(change):+.2f}%</span></div>',unsafe_allow_html=True)
+    st.markdown(f'<div style="border:1px solid #ddd;border-radius:12px;padding:10px"><span style="font-size:16px;font-weight:700">{html.escape(str(label))}</span><br><span style="font-size:2rem;font-weight:700;color:{color}">{html.escape(str(value))}</span><br><span style="font-size:16px;font-weight:600;color:{color}">{_safe_num(change):+.2f}%</span></div>',unsafe_allow_html=True)
 
 def styled_candidate_table(frame,currency="KRW"):
     price_cols=[c for c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표") if c in frame]
@@ -874,6 +874,15 @@ div[data-testid="stMetric"] {
     border-radius: 14px;
     padding: 10px;
 }
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+    font-size: 15px !important;
+    color: var(--text-color) !important;
+    opacity: .9;
+    line-height: 1.5;
+}
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+    font-size: 16px;
+}
 .stButton > button {
     min-height: 48px;
     border-radius: 14px;
@@ -1601,8 +1610,10 @@ def market_sidebar():
             st.caption(f"{row.get('기준일','')} · {row.get('상태','미확인')}")
             if pd.notna(row.get("수신시각")):st.caption("API 수신: "+str(row["수신시각"]))
         else:
-            st.write(str(row["지표"]))
-            st.caption(str(row.get("상태","미수신")))
+            with st.container(border=True):
+                st.markdown("**"+str(row["지표"])+"**")
+                st.write("값 없음 · 연결 미완료")
+                st.caption(str(row.get("상태","미수신")))
 
 with st.sidebar:
     market_sidebar()
