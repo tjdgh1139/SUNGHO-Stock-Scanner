@@ -1313,7 +1313,7 @@ class KISLiveTape:
                     try:
                         obj=json.loads(message)
                         if obj.get("header",{}).get("tr_id")=="PINGPONG":
-                            ws.send(message)
+                            ws.send(message,opcode=websocket.ABNF.OPCODE_PONG)
                         elif obj.get("body",{}).get("rt_cd")=="0":
                             with self.lock:self.acknowledged.add(obj.get("header",{}).get("tr_id"))
                         elif "rt_cd" in obj.get("body",{}):
