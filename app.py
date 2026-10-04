@@ -426,7 +426,11 @@ def dart_recent_disclosures(corp_code, days=2, max_count=20):
         key=st.secrets.get("DART_API_KEY","")
     except Exception:
         key=""
-    if not key or not corp_code:return []
+    diagnostics=st.session_state.setdefault("feed_diagnostics",{})
+    st.session_state.dart_live_verified=False
+    if not key or not corp_code:
+        diagnostics["DART_DISCLOSURES"]={"status":"NOT_CONFIGURED" if not key else "NO_MAPPING"}
+        return []
     try:
         end=pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y%m%d")
         begin=(pd.Timestamp.now(tz="Asia/Seoul")-pd.Timedelta(days=max(1,days))).strftime("%Y%m%d")
@@ -434,14 +438,18 @@ def dart_recent_disclosures(corp_code, days=2, max_count=20):
             params={"crtfc_key":key,"corp_code":str(corp_code),"bgn_de":begin,"end_de":end,"page_count":max_count},
             timeout=8)
         r.raise_for_status(); payload=r.json()
-        if payload.get("status") not in ("000","013"):return []
+        status=str(payload.get("status","UNKNOWN"))
+        diagnostics["DART_DISCLOSURES"]={"status":"PASS" if status=="000" else "NO_DISCLOSURES" if status=="013" else "API_ERROR",
+            "api_status":status,"조회시작":begin,"조회종료":end,"건수":len(payload.get("list",[]) or [])}
+        if status not in ("000","013"):return []
         st.session_state.dart_live_verified=True
         out=[]
         for x in payload.get("list",[]) or []:
             out.append({"type":"dart","title":x.get("report_nm",""),"body":x.get("corp_name",""),
                         "date":x.get("rcept_dt",""),"receipt":x.get("rcept_no","")})
         return out
-    except Exception:
+    except Exception as exc:
+        diagnostics["DART_DISCLOSURES"]={"status":"REQUEST_ERROR","error_type":type(exc).__name__}
         return []
 
 
@@ -697,8 +705,13 @@ def secret_value(name):
 
 def ensure_dart_map():
     global _DART_CORP_MAP
-    if _DART_CORP_MAP:return True
-    if not secret_value("DART_API_KEY"):return False
+    diagnostics=st.session_state.setdefault("feed_diagnostics",{})
+    if _DART_CORP_MAP:
+        diagnostics["DART_MAPPING"]="PASS"
+        return True
+    if not secret_value("DART_API_KEY"):
+        diagnostics["DART_MAPPING"]="NOT_CONFIGURED"
+        return False
     try:
         _DART_CORP_MAP=dart_corporations(secret_value("DART_API_KEY"))
         st.session_state.dart_corp_map=_DART_CORP_MAP
@@ -711,7 +724,9 @@ def ensure_dart_map():
 def refresh_news_candidates(frame,top_n=10,ttl=300):
     global _NEWS_CACHE
     client_id=secret_value("NAVER_CLIENT_ID");client_secret=secret_value("NAVER_CLIENT_SECRET")
-    if not client_id or not client_secret:return
+    if not client_id or not client_secret:
+        st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="NOT_CONFIGURED: 네이버 뉴스 키 미설정"
+        return
     cache=st.session_state.setdefault("automatic_news",{})
     for _,row in frame.head(top_n).iterrows():
         code=str(row.get("코드",""));name=str(row.get("종목",""))
@@ -1732,8 +1747,11 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
         if load_krx_holidays_csv(holidayfile.getvalue()): st.success("KRX 휴장일 캘린더 적용 완료")
         else: st.error("휴장일 CSV 형식을 확인해 주세요.")
     if st.button("공시·뉴스 자동 연결 점검",use_container_width=True):
-        ensure_dart_map()
-        refresh_news_candidates(pd.DataFrame([{"코드":"005930","종목":"삼성전자"}]))
+        st.session_state.feed_diagnostics={}
+        if ensure_dart_map():
+            dart_recent_disclosures(dart_corp_code("005930"),days=30)
+        refresh_news_candidates(pd.DataFrame([{"코드":"005930","종목":"삼성전자"}]),ttl=0)
+        st.caption("삼성전자 최근 30일 공시로 연결 검사 · 스캔 점수에는 기존 최근 2일 기준 유지. NO_DISCLOSURES는 정상 응답이지만 기간 내 공시 없음입니다.")
         st.write(st.session_state.get("feed_diagnostics",{}))
     st.caption("뉴스 자동 수집: NAVER_CLIENT_ID·NAVER_CLIENT_SECRET이 설정되면 실행. CSV 피드도 계속 지원합니다.")
     evidence=st.file_uploader("외부 배포 검증 증거 JSON",type=["json"],key="deploy_evidence")
