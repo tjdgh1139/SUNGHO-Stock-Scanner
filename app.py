@@ -1207,6 +1207,8 @@ class KISLiveTape:
         self.connected=False
         self.acknowledged=set()
         self.reconnect_count=0
+        self.close_code=None
+        self.subscription_code=""
 
     def snapshot(self):
         with self.lock:
@@ -1215,7 +1217,8 @@ class KISLiveTape:
     def diagnostics(self):
         with self.lock:
             return {"connected":self.connected,"approved_channels":sorted(self.acknowledged),
-                    "contract_code":self.code or "","reconnect_count":self.reconnect_count,"error":self.error}
+                    "contract_code":self.code or "","reconnect_count":self.reconnect_count,"error":self.error,
+                    "close_code":self.close_code,"subscription_code":self.subscription_code}
 
     def stop(self):
         self.stop_event.set()
@@ -1239,6 +1242,8 @@ class KISLiveTape:
         self.code=code
         self.market=market
         self.reconnect_count=0
+        self.close_code=None
+        self.subscription_code=""
         self.data={}
         self.acknowledged=set()
         self.error=""
@@ -1295,6 +1300,7 @@ class KISLiveTape:
             with self.lock:
                 self.connected=False
                 self.acknowledged.clear()
+                self.close_code=args[0] if args and isinstance(args[0],int) else None
 
         def on_message(ws, message):
             if self.stop_event.is_set():
@@ -1317,7 +1323,12 @@ class KISLiveTape:
                         elif obj.get("body",{}).get("rt_cd")=="0":
                             with self.lock:self.acknowledged.add(obj.get("header",{}).get("tr_id"))
                         elif "rt_cd" in obj.get("body",{}):
-                            self.error="KIS 구독 거절"
+                            # Expose only a bounded API code, never raw messages or credentials.
+                            raw_code=str(obj.get("body",{}).get("msg_cd", ""))
+                            safe_code=raw_code if 1<=len(raw_code)<=32 and all(c.isascii() and (c.isalnum() or c in "_-") for c in raw_code) else "UNKNOWN"
+                            with self.lock:
+                                self.subscription_code=safe_code
+                                self.error=f"KIS 구독 거절: {safe_code}"
                     except Exception:
                         pass
             except Exception as e:
@@ -1637,7 +1648,9 @@ def night_future_snapshot():
     diagnostics=tape.diagnostics()
     row={"지표":"국내 야간선물","상태":night_future_status(data,diagnostics),
          "계약코드":diagnostics["contract_code"],"구독승인":"H0MFCNT0" in diagnostics["approved_channels"],
-         "재연결횟수":diagnostics["reconnect_count"]}
+         "재연결횟수":diagnostics["reconnect_count"],
+         "구독응답코드":diagnostics.get("subscription_code") or "없음",
+         "연결종료코드":diagnostics.get("close_code") or "없음"}
     if data:
         row.update({"최근값":data["최근값"],"전일대비%":data["전일대비%"],"기준일":"체결시간 "+data["체결시간"]+" · 거래일 미확인",
                     "수신시각":data["수신시각"]})
