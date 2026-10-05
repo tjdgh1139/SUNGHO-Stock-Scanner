@@ -79,7 +79,7 @@ def colored_quote(label,value,change):
 def candidate_formats(frame,currency="KRW"):
     formats={}
     for c in frame.columns:
-        if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표"):
+        if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표","평단","익절가","평가손익"):
             formats[c]="%,.0f원" if currency=="KRW" else "$%,.2f"
         elif "%" in c or c=="등락률":formats[c]="%+.2f%%"
         elif "손익비" in c:formats[c]="%.2f"
@@ -89,7 +89,7 @@ def candidate_formats(frame,currency="KRW"):
 def styled_candidate_table(frame,currency="KRW"):
     # One format call: later Styler.format calls otherwise reset earlier columns.
     formats={c:("{:,.0f}원" if currency=="KRW" else "${:,.2f}") for c in frame.columns
-             if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표")}
+             if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표","평단","익절가","평가손익")}
     formats.update({c:"{:+.2f}%" for c in frame.columns if "%" in c or c=="등락률"})
     formats.update({c:"{:.1f}" for c in frame.columns if "점수" in c or c in ("거래량x","RSI")})
     formats.update({c:"{:.2f}" for c in frame.columns if "손익비" in c})
@@ -379,15 +379,37 @@ def entry_quality(row):
             "목표근거":"최근 20일 고가 저항" if capped else "ATR 시나리오·도달 미검증",
             "왕복비용가정%":0.4}
 
+def validate_holdings(frame):
+    required=["코드","종목","수량","평단","손절가","익절가"]
+    if not isinstance(frame,pd.DataFrame) or not all(c in frame for c in required):
+        raise ValueError("보유종목 필수 열 확인 필요")
+    out=frame[required].dropna(how="all").copy()
+    if len(out)>5:raise ValueError("최대 5종목")
+    codes=out["코드"].astype(str).str.strip()
+    numbers=out[["수량","평단","손절가","익절가"]].apply(pd.to_numeric,errors="coerce")
+    valid_codes=codes.map(lambda x:len(x)==6 and x.isascii() and x.isdigit()).all() and not codes.duplicated().any()
+    valid_numbers=np.isfinite(numbers.to_numpy(dtype=float)).all()
+    valid_levels=((numbers["수량"]>0)&(numbers["수량"]%1==0)&(numbers["손절가"]>0)&
+                  (numbers["손절가"]<numbers["평단"])&(numbers["평단"]<numbers["익절가"])).all()
+    if not valid_codes or not valid_numbers or not valid_levels:
+        raise ValueError("중복 없는 6자리 코드·양의 정수 수량·손절가 < 평단 < 익절가 확인 필요")
+    out["코드"]=codes;out[numbers.columns]=numbers
+    return out
+
 def holding_review(position, quote):
     qty=_safe_num(position.get("수량"));avg=_safe_num(position.get("평단"))
     px=_safe_num(quote.get("현재가"))
     stop=_safe_num(position.get("손절가"));target=_safe_num(position.get("익절가"))
+    fresh=timestamp_fresh(quote.get("trade_received_utc"),seconds=30) and px>0
     out={"코드":position.get("코드"),"종목":position.get("종목"),"수량":qty,"평단":avg,
-         "현재가":px or None,"평가손익":round((px-avg)*qty,2) if px>0 else None,
-         "수익률%":round((px/avg-1)*100,2) if px>0 and avg>0 else None,
+         "현재가":px if fresh else None,"평가손익":round((px-avg)*qty,2) if fresh and avg>0 else None,
+         "수익률%":round((px/avg-1)*100,2) if fresh and avg>0 else None,
+         "손절가":stop,"익절가":target,"체결시각":quote.get("체결시간","미수신"),
+         "수신상태":"30초 이내 실제 체결" if fresh else "체결 미수신·30초 초과·가격 오류",
+         "호가수신":"확인" if timestamp_fresh(quote.get("book_received_utc"),30) else "미확인",
+         "프로그램수신":"확인" if timestamp_fresh(quote.get("program_received_utc"),120) else "미확인",
          "의견":"판단 보류","근거":"실제 체결 시각 확인 필요"}
-    if not timestamp_fresh(quote.get("trade_received_utc")):return out
+    if not fresh:return out
     if qty<=0 or avg<=0 or not 0<stop<avg<target:
         out["근거"]="수량·평단·손절·익절 설정 확인 필요";return out
     if px<=stop:out.update(의견="손절 조건 충족",근거="등록한 손절가 이하 · 실제 주문 체결 확인 필요")
@@ -2277,7 +2299,7 @@ if not df.empty:
 else:
     st.info("위의 **지금 스캔** 버튼을 누르면 후보 종목이 표시됩니다.")
 
-with st.expander("💼 보유종목 관리", expanded=False):
+with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("holdings",pd.DataFrame()).empty):
     st.caption("국내 종목 최대 5개 · 금액은 원 · 가격 조건 안내이며 자동 주문하지 않습니다. 평가손익은 비용 차감 전입니다.")
     initial=st.session_state.setdefault("holdings",pd.DataFrame(columns=["코드","종목","수량","평단","손절가","익절가"]))
     with st.form("holdings_form"):
@@ -2285,26 +2307,35 @@ with st.expander("💼 보유종목 관리", expanded=False):
                               column_config={"코드":st.column_config.TextColumn("코드 (6자리)")})
         save=st.form_submit_button("보유종목 저장")
     if save:
-        valid=edited.dropna(how="all").copy()
-        codes=valid["코드"].astype(str)
-        numeric=valid[["수량","평단","손절가","익절가"]].apply(pd.to_numeric,errors="coerce")
-        if len(valid)>5 or not codes.map(lambda x:len(x)==6 and x.isascii() and x.isdigit()).all() or codes.duplicated().any() or numeric.isna().any().any() or not ((numeric["수량"]>0)&(numeric["손절가"]>0)&(numeric["손절가"]<numeric["평단"])&(numeric["평단"]<numeric["익절가"])).all():
-            st.error("최대 5개·중복 없는 6자리 코드·양수 수량·손절가 < 평단 < 익절가를 입력하세요.")
-        else:
-            valid[numeric.columns]=numeric
-            st.session_state.holdings=valid
+        try:
+            st.session_state.holdings=validate_holdings(edited)
+            if st.session_state.get("candidate_monitor_enabled") and not st.session_state.holdings.empty and kis_configured():
+                held=st.session_state.holdings["코드"].astype(str).tolist()
+                candidates=st.session_state.scan.head(5)["코드"].astype(str).tolist() if "코드" in st.session_state.scan else []
+                live_tape().start(list(dict.fromkeys(held+candidates))[:10],secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
             st.success("현재 세션에 저장했습니다. 재부팅 전 CSV를 내려받으세요.")
+        except ValueError as exc:st.error(str(exc))
+    start_holdings,stop_holdings=st.columns([3,1])
+    if start_holdings.button("보유종목 실시간 감시 시작",key="holding_monitor_start",use_container_width=True):
+        if st.session_state.holdings.empty:st.warning("보유종목을 먼저 저장하세요.")
+        elif not kis_configured() or not websocket_capability():st.warning("KIS 설정과 WebSocket 패키지 확인 필요")
+        else:
+            st.session_state.candidate_monitor_enabled=True
+            held=st.session_state.holdings["코드"].astype(str).tolist()
+            candidates=st.session_state.scan.head(5)["코드"].astype(str).tolist() if "코드" in st.session_state.scan else []
+            live_tape().start(list(dict.fromkeys(held+candidates))[:10],secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
+    if stop_holdings.button("감시 중지",key="holding_monitor_stop",use_container_width=True):
+        st.session_state.candidate_monitor_enabled=False
+        live_tape().stop()
     st.download_button("보유종목 CSV 백업",st.session_state.holdings.to_csv(index=False).encode("utf-8-sig"),"holdings.csv","text/csv")
     restored=st.file_uploader("보유종목 CSV 복원",type=["csv"],key="holdings_restore")
     if restored is not None and st.button("복원 내용을 입력표로 불러오기"):
         try:
             restored_df=pd.read_csv(restored,dtype={"코드":str})
-            required=["코드","종목","수량","평단","손절가","익절가"]
-            if not all(c in restored_df for c in required) or len(restored_df)>5:raise ValueError()
-            st.session_state.holdings=restored_df[required]
+            st.session_state.holdings=validate_holdings(restored_df)
             st.rerun()
         except Exception:st.error("CSV 형식 확인 필요")
-    @st.fragment(run_every="5s")
+    @st.fragment(run_every="2s")
     def render_holdings_review():
         positions=st.session_state.holdings
         tape_rows,connected,_=live_tape().snapshots()
@@ -2312,7 +2343,14 @@ with st.expander("💼 보유종목 관리", expanded=False):
         for _,position in positions.iterrows():
             quote=tape_rows.get(str(position["코드"]).zfill(6),{}) if connected else {}
             rows.append(holding_review(position.to_dict(),quote))
-        if rows:st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+        if rows:
+            for reviewed in rows:
+                message=str(reviewed["종목"])+" · "+reviewed["의견"]+" · "+reviewed["근거"]
+                if reviewed["의견"]=="손절 조건 충족":st.error(message)
+                elif reviewed["의견"]=="일부 익절 검토":st.success(message)
+                elif reviewed["의견"]=="판단 보류":st.warning(message)
+            show_candidate_table(pd.DataFrame(rows),"KRW")
+            st.caption("화면 평가 2초 주기 · 30초 이내 실제 체결만 현재가·손익에 반영 · 주문은 직접 확인해야 합니다.")
         st.caption("구독된 보유종목별 실제 체결을 반영합니다. 최대 10종목 동시 감시 · 영구 저장·수급/뉴스 종합 권유 검증은 아직 남아 있습니다.")
     render_holdings_review()
 
