@@ -79,7 +79,7 @@ def colored_quote(label,value,change):
 def candidate_formats(frame,currency="KRW"):
     formats={}
     for c in frame.columns:
-        if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표"):
+        if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표"):
             formats[c]="%,.0f원" if currency=="KRW" else "$%,.2f"
         elif "%" in c or c=="등락률":formats[c]="%+.2f%%"
         elif "손익비" in c:formats[c]="%.2f"
@@ -89,7 +89,7 @@ def candidate_formats(frame,currency="KRW"):
 def styled_candidate_table(frame,currency="KRW"):
     # One format call: later Styler.format calls otherwise reset earlier columns.
     formats={c:("{:,.0f}원" if currency=="KRW" else "${:,.2f}") for c in frame.columns
-             if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표")}
+             if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표")}
     formats.update({c:"{:+.2f}%" for c in frame.columns if "%" in c or c=="등락률"})
     formats.update({c:"{:.1f}" for c in frame.columns if "점수" in c or c in ("거래량x","RSI")})
     formats.update({c:"{:.2f}" for c in frame.columns if "손익비" in c})
@@ -116,6 +116,7 @@ def candidate_cards(frame):
         code=html.escape(str(row.get("코드","-")))
         status=html.escape(str(row.get("상태","판단보류")))
         confidence=html.escape(str(row.get("데이터신뢰도","일봉/지연")))
+        reason=html.escape(str(row.get("진입제한사유","")))
         price=_safe_num(row.get("현재가",row.get("종가",0)))
         change=_safe_num(row.get("등락%",0))
         score=_safe_num(row.get("실시간단타점수",row.get("단타점수",row.get("점수",0))))
@@ -124,7 +125,7 @@ def candidate_cards(frame):
                      f'<div class="card-name">{name}</div><div class="card-price">{price:,.0f}<span> 원</span></div>'
                      f'<div class="card-change {tone}">{change:+.2f}%</div>'
                      f'<div class="card-score">단타 점수 <strong>{score:.1f}</strong><span> / 100</span></div>'
-                     f'<div class="card-status">{status}</div><div class="card-source">{confidence}</div></article>')
+                     f'<div class="card-status">{status}</div><div class="card-source">{confidence}</div><div class="card-reason">{reason}</div></article>')
     return '<div class="candidate-grid">'+''.join(cards)+'</div>'
 
 def strategy_scores(row):
@@ -392,6 +393,31 @@ def holding_review(position, quote):
     if px<=stop:out.update(의견="손절 조건 충족",근거="등록한 손절가 이하 · 실제 주문 체결 확인 필요")
     elif px>=target:out.update(의견="일부 익절 검토",근거="등록한 목표가 도달 · 실제 주문 체결 확인 필요")
     else:out.update(의견="보유 관찰",근거="등록한 가격 조건 사이 · 수급·뉴스 종합판단은 미검증")
+    return out
+
+def entry_gate_reason(row):
+    missing=[]
+    for field,label in (("quote_received_utc","현재가"),("rest_received_utc","REST"),
+                        ("trade_received_utc","체결"),("book_received_utc","호가"),
+                        ("program_received_utc","프로그램")):
+        if not timestamp_fresh(row.get(field)):missing.append(label)
+    reasons=[]
+    if missing:reasons.append("최근 수신 미확인: "+"·".join(missing))
+    risk=entry_risk_reason(row)
+    if risk:reasons.append(risk)
+    if not reasons:
+        status=execution_permission(row,row_live_health(row))
+        reasons.append("진입 조건 통과 · 실전 성적 검증 중" if status=="진입확인" else "점수 기준 미달 · 관찰")
+    return " / ".join(reasons)
+
+def current_entry_view(frame):
+    out=frame.copy()
+    if out.empty:return out
+    out["상태"]=[execution_permission(r,row_live_health(r)) for _,r in out.iterrows()]
+    out["진입제한사유"]=[entry_gate_reason(r) for _,r in out.iterrows()]
+    if kr_market_session_safe()=="CLOSED":
+        out["상태"]="신규진입금지"
+        out["진입제한사유"]="거래시간 외·등록 휴장일 / "+out["진입제한사유"]
     return out
 
 def execution_permission(row, health=None, regime="NORMAL"):
@@ -740,7 +766,13 @@ def refresh_top_candidates_rate_safe(df, top_n=30, batch_size=8):
     session=kr_market_session_safe()
     if session=="CLOSED":return df
     out=df.copy(); focus=out.head(min(max(int(top_n),1),len(out))).copy()
-    idxs=refresh_batch_indices(out,batch_size)
+    rotated=refresh_batch_indices(out,batch_size)
+    if st.session_state.get("candidate_monitor_enabled"):
+        # Keep top five REST evidence fresh while rotating the remaining request slots.
+        cap=max(1,int(batch_size))
+        priority=list(out.head(min(5,max(0,cap-1))).index)
+        idxs=(priority+[idx for idx in rotated if idx not in priority])[:cap]
+    else:idxs=rotated
     from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=min(4,len(idxs) or 1)) as ex:
         fut={ex.submit(kis_quote,str(out.loc[idx].get("코드","")).zfill(6)):idx for idx in idxs}
@@ -752,11 +784,19 @@ def refresh_top_candidates_rate_safe(df, top_n=30, batch_size=8):
             for k,v in q.items():out.at[idx,k]=v
             if q.get("현재가",0)>0:
                 out.at[idx,"종가"]=q["현재가"]; out.at[idx,"등락%"]=q.get("장중등락%",out.loc[idx].get("등락%",0))
-    tape_data,tape_connected,tape_error=live_tape().snapshot()
-    if tape_connected and timestamp_fresh(tape_data.get("trade_received_utc")):
+    tape=live_tape()
+    if hasattr(tape,"snapshots"):
+        tape_rows,tape_connected,tape_error=tape.snapshots()
+    else:
+        data,tape_connected,tape_error=tape.snapshot()
+        tape_rows={data.get("코드"):data} if data else {}
+    if tape_connected:
         for idx in out.index:
-            if str(out.at[idx,"코드"])==tape_data.get("코드"):
-                for key,value in tape_data.items():out.at[idx,key]=value
+            data=tape_rows.get(str(out.at[idx,"코드"]).zfill(6),{})
+            if timestamp_fresh(data.get("trade_received_utc")):
+                for key,value in data.items():out.at[idx,key]=value
+                if data.get("현재가",0)>0:
+                    out.at[idx,"종가"]=data["현재가"];out.at[idx,"등락%"]=data.get("등락%",out.at[idx,"등락%"])
                 if idx not in idxs:idxs.append(idx)
     out=refresh_technical_rows(out,idxs)
     # Recalculate all candidates using latest available data; only batch network calls rotate.
@@ -984,6 +1024,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
 .card-score {font-size:13px; color:#d5deea; border-top:1px solid #34445d; padding-top:10px;}
 .card-score strong {font-size:20px; color:#f8fafc;}
 .card-status {font-size:13px; margin-top:8px; font-weight:600;}
+.card-reason {font-size:12px;line-height:1.5;color:#d7dfeb;margin-top:8px;overflow-wrap:anywhere;}
 .card-source {font-size:12px; color:#b4c2d4; margin-top:4px;}
 @media (max-width:1000px) {
     .candidate-grid {display:flex; overflow-x:auto; scroll-snap-type:x proximity; padding-bottom:8px;}
@@ -1274,6 +1315,29 @@ def kis_investor(code):
     except Exception:
         return pd.DataFrame()
 
+@st.cache_data(ttl=60,show_spinner=False)
+def kis_estimated_investor(code):
+    """Official intraday estimates, distinct from confirmed investor history."""
+    if not kis_configured():return pd.DataFrame()
+    try:
+        key=secret_value("KIS_APP_KEY");secret=secret_value("KIS_APP_SECRET")
+        response=kis_get("https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
+                         {"appkey":key,"appsecret":secret,"tr_id":"HHPTJ04160200","custtype":"P"},
+                         {"MKSC_SHRN_ISCD":str(code).zfill(6)},key,secret)
+        payload=response.json()
+        if payload.get("rt_cd")!="0":return pd.DataFrame()
+        rows=pd.DataFrame(payload.get("output2",[]))
+        mapping={"bsop_hour_gb":"입력구분","frgn_fake_ntby_qty":"외국인 추정 순매수(주)",
+                 "orgn_fake_ntby_qty":"기관 추정 순매수(주)","sum_fake_ntby_qty":"합산 추정 순매수(주)"}
+        if rows.empty or not all(c in rows for c in mapping):return pd.DataFrame()
+        out=rows[list(mapping)].rename(columns=mapping)
+        for c in list(mapping.values())[1:]:out[c]=pd.to_numeric(out[c],errors="coerce")
+        if out.iloc[:,1:].isna().any().any():return pd.DataFrame()
+        out.attrs["received_utc"]=pd.Timestamp.now(tz="UTC").isoformat()
+        out.attrs["source"]="KIS 장중 추정가집계 · 기준일 응답 미제공"
+        return out
+    except Exception:return pd.DataFrame()
+
 @st.cache_resource(show_spinner=False)
 def websocket_capability():
     """
@@ -1309,13 +1373,18 @@ def websocket_owners():
     return threading.Lock(), {}
 
 class KISLiveTape:
-    """One-symbol KRX/NXT/unified trade, quote and program monitor with reconnect."""
+    """Single socket, up to ten stock symbols, with isolated snapshots and reconnect."""
     def __init__(self):
         self.lock=threading.Lock()
         self.stop_event=threading.Event()
         self.thread=None
         self.ws=None
         self.code=None
+        self.codes=()
+        self.by_code={}
+        self.approval=None
+        self.channels=()
+        self.subscription_lock=threading.RLock()
         self.market=None
         self.data={}
         self.error=""
@@ -1325,14 +1394,45 @@ class KISLiveTape:
         self.close_code=None
         self.subscription_code=""
 
-    def snapshot(self):
+    def snapshot(self, code=None):
         with self.lock:
-            return dict(self.data), self.connected, self.error
+            data=self.by_code.get(str(code).zfill(6),{}) if code is not None else self.data
+            return dict(data), self.connected, self.error
+
+    def snapshots(self):
+        with self.lock:
+            return {code:dict(data) for code,data in self.by_code.items()},self.connected,self.error
+
+    def subscription_payload(self, channel, code, action="1"):
+        return json.dumps({"header":{"approval_key":self.approval,"custtype":"P",
+                           "tr_type":action,"content-type":"utf-8"},
+                           "body":{"input":{"tr_id":channel,"tr_key":code}}})
+
+    def update_symbols(self, codes):
+        # Serialize membership changes; unsubscribe first to stay within our budget.
+        with self.subscription_lock:
+            wanted=tuple(dict.fromkeys(codes))
+            with self.lock:old=self.codes
+            if wanted==old:return
+            if not self.connected or not self.ws or not self.approval:
+                raise RuntimeError("실시간 구독 연결 준비 중")
+            remove=[code for code in old if code not in wanted]
+            add=[code for code in wanted if code not in old]
+            for action,items in (("2",remove),("1",add)):
+                for code in items:
+                    for channel in self.channels:
+                        self.ws.send(self.subscription_payload(channel,code,action))
+                        time.sleep(.15)
+            with self.lock:
+                self.codes=wanted
+                self.code=wanted[0]
+                self.by_code={code:self.by_code.get(code,{}) for code in wanted}
+                self.data=dict(self.by_code.get(self.code,{}))
 
     def diagnostics(self):
         with self.lock:
             return {"connected":self.connected,"approved_channels":sorted(self.acknowledged),
-                    "contract_code":self.code or "","reconnect_count":self.reconnect_count,"error":self.error,
+                    "contract_code":self.code or "","symbols":list(self.codes),"reconnect_count":self.reconnect_count,"error":self.error,
                     "close_code":self.close_code,"subscription_code":self.subscription_code}
 
     def stop(self):
@@ -1359,15 +1459,31 @@ class KISLiveTape:
             self._start_owned(code,appkey,appsecret,market)
 
     def _start_owned(self, code, appkey, appsecret, market="UN"):
-        code=str(code).zfill(6)
-        if self.thread and self.thread.is_alive() and self.code==code and self.market==market:
+        inputs=code if isinstance(code,(list,tuple,set)) else [code]
+        codes=tuple(dict.fromkeys(str(c).zfill(6) for c in inputs))
+        if not codes or len(codes)>(1 if market=="NIGHT_FUTURE" else 10):
+            self.error="실시간 감시는 국내 최대 10종목 · 야간선물 1종목"
             return
+        if market!="NIGHT_FUTURE" and not all(len(c)==6 and c.isascii() and c.isdigit() for c in codes):
+            self.error="유효하지 않은 종목코드"
+            return
+        if self.thread and self.thread.is_alive() and self.market==market:
+            if self.codes==codes:return
+            try:
+                self.update_symbols(codes)
+            except Exception as exc:
+                self.error="구독 변경 실패: "+type(exc).__name__
+            return
+        code=codes[0]
         self.stop()
         if self.thread and self.thread.is_alive():
             self.error="이전 연결 종료 대기 중"
             return
         self.stop_event=threading.Event()
         self.code=code
+        self.codes=codes
+        self.by_code={c:{} for c in codes}
+        self.approval=None
         self.market=market
         self.reconnect_count=0
         self.close_code=None
@@ -1398,26 +1514,27 @@ class KISLiveTape:
             self.error=f"WebSocket 접속키 발급 실패: {type(e).__name__}"
             return
 
-        def sub(tr_id):
-            return json.dumps({
-                "header":{"approval_key":approval,"custtype":"P",
-                          "tr_type":"1","content-type":"utf-8"},
-                "body":{"input":{"tr_id":tr_id,"tr_key":code}}
-            })
+        self.approval=approval
+        if not self.codes:self.codes=(code,)
+        if not self.by_code:self.by_code={c:{} for c in self.codes}
 
         channels={"UN":("H0UNCNT0","H0UNASP0","H0UNPGM0"),"NX":("H0NXCNT0","H0NXASP0","H0NXPGM0"),"J":("H0STCNT0","H0STASP0","H0STPGM0"),"NIGHT_FUTURE":("H0MFCNT0",)}.get(market)
         if channels is None:
             self.error="지원하지 않는 시장 코드"
             return
 
+        self.channels=channels
+
         def on_open(ws):
             with self.lock:
                 self.connected=True
                 self.acknowledged.clear()
                 self.error=""
-            for channel in channels:
-                ws.send(sub(channel))
-                time.sleep(.15)
+            with self.subscription_lock:
+                for symbol in self.codes:
+                    for channel in channels:
+                        ws.send(self.subscription_payload(channel,symbol))
+                        time.sleep(.15)
 
         def on_error(ws, err):
             with self.lock:
@@ -1440,8 +1557,11 @@ class KISLiveTape:
                     return
                 if message[0] == "0":
                     for upd in (parse_futures_packet(message,code) if market=="NIGHT_FUTURE" else parse_market_packet(message)):
-                        if upd["코드"]==code:
-                            with self.lock:self.data.update(upd)
+                        with self.lock:
+                            symbol=upd["코드"]
+                            if symbol in self.codes:
+                                self.by_code.setdefault(symbol,{}).update(upd)
+                                if symbol==self.code:self.data=dict(self.by_code[symbol])
                 else:
                     # KIS sends JSON subscription acknowledgements / ping messages.
                     try:
@@ -1492,13 +1612,13 @@ class KISLiveTape:
             self.connected=False
 
 @st.cache_resource(show_spinner=False)
-def _cached_live_tape(session_id):
+def _cached_live_tape(session_id, protocol_version="multi-v1"):
     return KISLiveTape()
 
 def live_tape():
     import uuid
     sid=st.session_state.setdefault("tape_session_id",str(uuid.uuid4()))
-    return _cached_live_tape(sid)
+    return _cached_live_tape(sid,"multi-v1")
 
 
 def add_trade_levels(a, d):
@@ -1982,17 +2102,43 @@ with st.expander("🇺🇸 미국 단타·스윙·장기 후보",expanded=False)
             else:st.warning("미국 일봉을 받지 못했습니다.")
     st.caption("미국 가격 단위 USD · 한국 순위와 별도 비교 · 거래소 시세 지연 여부 미검증")
 
-df=st.session_state.scan
+df=current_entry_view(st.session_state.scan)
 
 if not df.empty:
     if st.session_state.last_live_refresh:
         st.caption(f"🔄 TOP {focus_n} 자동 재평가: {st.session_state.last_live_refresh:%H:%M:%S} KST · {refresh_sec}초 주기")
     elif auto_live:
         st.caption("🟡 자동 재평가 대기 — KIS 연결/첫 스캔 후 활성화")
+    monitor_start,monitor_stop=st.columns([3,1])
+    if monitor_start.button("TOP 5 + 보유종목 실시간 감시 시작",key="candidate_monitor_start",use_container_width=True):
+        st.session_state.candidate_monitor_enabled=True
+    if monitor_stop.button("감시 중지",key="candidate_monitor_stop",use_container_width=True):
+        st.session_state.candidate_monitor_enabled=False
+        live_tape().stop()
+    if st.session_state.get("candidate_monitor_enabled"):
+        if kis_configured() and websocket_capability():
+            held=st.session_state.get("holdings",pd.DataFrame())
+            holding_codes=held["코드"].astype(str).tolist() if "코드" in held else []
+            monitor_codes=list(dict.fromkeys(holding_codes+df.head(5)["코드"].astype(str).tolist()))[:10]
+            live_tape().start(monitor_codes,secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
+            diagnostic=live_tape().diagnostics()
+            st.caption("실시간 구독 요청: "+", ".join(diagnostic["symbols"])+" · 소켓 "+str(diagnostic["connected"]))
+            if diagnostic["error"]:st.warning(diagnostic["error"])
+        else:st.warning("KIS 설정과 WebSocket 패키지 확인 필요")
+    st.subheader("현재 진입 조건 통과 후보")
+    ready=df[df["상태"]=="진입확인"].head(5)
+    if ready.empty:
+        st.info("현재 진입 조건을 통과한 후보 없음 · 아래 제한 사유를 확인하세요.")
+    else:
+        st.markdown(candidate_cards(ready),unsafe_allow_html=True)
+        ready_cols=[c for c in ["종목","매수하단","매수상단","손절가","진입검토목표","비용반영손익비"] if c in ready]
+        show_candidate_table(ready[ready_cols],"KRW")
+        st.warning("데이터·가격 조건 통과 후보입니다. 실제 장중 동작과 성적 검증은 아직 진행 중입니다.")
+    st.caption(f"자동 재평가 {'켜짐' if auto_live else '꺼짐'} · {refresh_sec}초마다 최대 {refresh_batch}종목 REST 순환 갱신 · WebSocket은 구독된 최대 10종목 · 앱 연결 유지 필요")
     st.subheader("TOP 5 · 우선 비교")
     st.markdown(candidate_cards(df),unsafe_allow_html=True)
     st.caption("현재 순위의 후보 · 점수는 수익 확률이 아닙니다. 모바일에서는 카드를 좌우로 넘겨 비교하세요.")
-    comparison_cols=["종목","매수하단","매수상단","손절가","1차목표","비용반영손익비","상태"]
+    comparison_cols=["종목","매수하단","매수상단","손절가","1차목표","비용반영손익비","상태","진입제한사유"]
     comparison_cols=[c for c in comparison_cols if c in df.columns]
     show_candidate_table(df.head(5)[comparison_cols],"KRW")
     with st.expander(f"전체 후보 {len(df)}개 · 점수와 매매 구간 비교",expanded=False):
@@ -2066,20 +2212,31 @@ if not df.empty:
         i3.metric("개인 순매수",f"{int(latest['개인']):,}주")
         st.caption("※ KIS 공식 안내상 종목별 투자자 당일 데이터는 장 종료 후 제공됩니다.")
 
+    estimated=kis_estimated_investor(t)
+    if not estimated.empty:
+        st.markdown("**외국인·기관 장중 추정 가집계**")
+        st.dataframe(estimated,hide_index=True,use_container_width=True,
+                     column_config={c:st.column_config.NumberColumn(c,format="%,.0f주") for c in estimated.columns if c!="입력구분"})
+        st.caption("KIS 직원 집계 추정치 · 외국인 09:30/11:20/13:20/14:30, 기관 10:00/11:20/13:20/14:30 예정 · 변동 가능. 수신시각: "+estimated.attrs.get("received_utc","미확인"))
+        st.caption("응답에 기준일·정확한 집계시각이 없어 당일 실시간 수급으로 확정하거나 진입 점수에 가산하지 않습니다.")
+    else:st.caption("외국인·기관 장중 추정가집계: 미수신 · 확정 수급과 별도")
+
     if websocket_capability():
         tape=live_tape()
         wc1,wc2=st.columns(2)
         if wc1.button("▶ 실시간 체결·호가 시작",use_container_width=True,key=f"ws_start_{t}"):
             if kis_configured():
-                tape.start(t,st.secrets["KIS_APP_KEY"],st.secrets["KIS_APP_SECRET"],kis_market_code())
+                symbols=list(dict.fromkeys(list(tape.codes)+[str(t).zfill(6)]))[-10:]
+                tape.start(symbols,st.secrets["KIS_APP_KEY"],st.secrets["KIS_APP_SECRET"],kis_market_code())
             else: st.warning("기존 KIS 인증정보를 읽을 수 없습니다.")
             time.sleep(.7)
         if wc2.button("■ 실시간 중지",use_container_width=True,key=f"ws_stop_{t}"):
+            st.session_state.candidate_monitor_enabled=False
             tape.stop()
-        snap,connected,wserr=tape.snapshot()
+        snap,connected,wserr=tape.snapshot(t)
         st.caption(("🟢 WebSocket 연결 중" if connected else "⚪ WebSocket 대기") +
                    (f" · {wserr}" if wserr else ""))
-        if snap and tape.code==str(t).zfill(6):
+        if snap and connected:
             w1,w2,w3=st.columns(3)
             w1.metric("실시간 체결가",f"{int(snap.get('현재가',0)):,}원",
                       f"{snap.get('등락%',0):.2f}%")
@@ -2150,13 +2307,13 @@ with st.expander("💼 보유종목 관리", expanded=False):
     @st.fragment(run_every="5s")
     def render_holdings_review():
         positions=st.session_state.holdings
-        tape_data,connected,_=live_tape().snapshot()
+        tape_rows,connected,_=live_tape().snapshots()
         rows=[]
         for _,position in positions.iterrows():
-            quote=tape_data if connected and str(position["코드"])==tape_data.get("코드") else {}
+            quote=tape_rows.get(str(position["코드"]).zfill(6),{}) if connected else {}
             rows.append(holding_review(position.to_dict(),quote))
         if rows:st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
-        st.caption("현재 WebSocket 감시 종목만 실제 체결을 반영합니다. 다종목 동시 구독·영구 저장·수급/뉴스 종합 권유는 아직 미구현입니다.")
+        st.caption("구독된 보유종목별 실제 체결을 반영합니다. 최대 10종목 동시 감시 · 영구 저장·수급/뉴스 종합 권유 검증은 아직 남아 있습니다.")
     render_holdings_review()
 
 with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
