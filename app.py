@@ -379,6 +379,24 @@ def entry_quality(row):
             "목표근거":"최근 20일 고가 저항" if capped else "ATR 시나리오·도달 미검증",
             "왕복비용가정%":0.4}
 
+def fill_holding_names(frame, names):
+    out=frame.copy()
+    for idx,row in out.iterrows():
+        code=str(row.get("코드","")).strip()
+        if code in names:out.at[idx,"종목"]=names[code]
+    return out
+
+def holdings_editor_changed(key):
+    base=st.session_state.holdings_draft.copy()
+    changes=st.session_state.get(key,{})
+    for idx,values in changes.get("edited_rows",{}).items():
+        for col,value in values.items():base.at[int(idx),col]=value
+    for row in changes.get("added_rows",[]):
+        base=pd.concat([base,pd.DataFrame([row])],ignore_index=True)
+    base=base.drop(index=changes.get("deleted_rows",[])).reset_index(drop=True)
+    st.session_state.holdings_draft=fill_holding_names(base,st.session_state.get("holdings_names",{}))
+    st.session_state.holdings_editor_revision=st.session_state.get("holdings_editor_revision",0)+1
+
 def validate_holdings(frame):
     required=["코드","종목","수량","평단","손절가","익절가"]
     if not isinstance(frame,pd.DataFrame) or not all(c in frame for c in required):
@@ -2302,10 +2320,17 @@ else:
 with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("holdings",pd.DataFrame()).empty):
     st.caption("국내 종목 최대 5개 · 금액은 원 · 가격 조건 안내이며 자동 주문하지 않습니다. 평가손익은 비용 차감 전입니다.")
     initial=st.session_state.setdefault("holdings",pd.DataFrame(columns=["코드","종목","수량","평단","손절가","익절가"]))
-    with st.form("holdings_form"):
-        edited=st.data_editor(initial,num_rows="dynamic",hide_index=True,use_container_width=True,
-                              column_config={"코드":st.column_config.TextColumn("코드 (6자리)")})
-        save=st.form_submit_button("보유종목 저장")
+    if "holdings_names" not in st.session_state:
+        stock_list=listing()
+        names=dict(zip(stock_list["Code"].astype(str).str.zfill(6),stock_list["Name"])) if {"Code","Name"}.issubset(stock_list.columns) else {}
+        st.session_state.holdings_names=names
+    st.session_state.setdefault("holdings_draft",initial.copy())
+    editor_key="holdings_editor_"+str(st.session_state.get("holdings_editor_revision",0))
+    edited=st.data_editor(st.session_state.holdings_draft,num_rows="dynamic",hide_index=True,use_container_width=True,
+                         key=editor_key,on_change=holdings_editor_changed,args=(editor_key,),
+                         column_config={"코드":st.column_config.TextColumn("코드 (6자리)")})
+    st.caption("6자리 코드를 입력하고 Enter를 누르면 종목명이 자동 입력됩니다. 조회되지 않으면 직접 입력하세요.")
+    save=st.button("보유종목 저장")
     if save:
         try:
             st.session_state.holdings=validate_holdings(edited)
