@@ -910,9 +910,15 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.block-container {padding-top: 1rem; padding-bottom: 5rem; max-width: 1100px;}
-h1 {font-size: 1.65rem !important; margin-bottom: .1rem;}
-h2, h3 {font-size: 1.15rem !important;}
+.block-container {padding-top: 1.5rem; padding-bottom: 5rem; max-width: 1280px;}
+h1 {font-size: 2rem !important; margin-bottom: .3rem; letter-spacing: -.04em;}
+h2, h3 {font-size: 1.25rem !important; letter-spacing: -.025em;}
+.scanner-hero {padding: 26px 28px; border-radius: 20px; background: linear-gradient(115deg,#101c33,#203e5d); color: #f8fafc; margin-bottom: 18px; box-shadow: 0 8px 24px rgba(15,23,42,.12);}
+.scanner-hero .eyebrow {font-size: 12px; font-weight: 700; color: #91c6ef; letter-spacing: .16em; margin-bottom: 9px;}
+.scanner-hero .brand {font-size: 30px; font-weight: 800; letter-spacing: -.04em; line-height: 1.3;}
+.scanner-hero .description {font-size: 15px; color: #d1e0ee; margin-top: 9px; line-height: 1.6;}
+div[data-testid="stExpander"] {border-radius: 16px; margin-top: 12px; border-color: rgba(128,128,128,.22);}
+div[data-testid="stCaptionContainer"] p {font-size: 14px; line-height: 1.6; opacity: .95;}
 div[data-testid="stMetric"] {
     border: 1px solid rgba(128,128,128,.25);
     border-radius: 14px;
@@ -932,11 +938,16 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
     border-radius: 14px;
     font-weight: 700;
     width: 100%;
+    transition: border-color .15s ease;
 }
+.stButton > button:hover {border-color: #377eb5;}
+.stButton > button[kind="primary"] {background: #175f96; border-color: #175f96; color: white;}
 div[data-testid="stDataFrame"] {border-radius: 12px; overflow: hidden;}
 @media (max-width: 700px) {
     .block-container {padding-left: .75rem; padding-right: .75rem; padding-top: .6rem;}
     h1 {font-size: 1.45rem !important;}
+    .scanner-hero {padding: 20px 18px; border-radius: 16px;}
+    .scanner-hero .brand {font-size: 25px;}
     div[data-testid="column"] {min-width: 0 !important;}
 }
 </style>
@@ -1810,7 +1821,7 @@ def market_sidebar():
 with st.sidebar:
     market_sidebar()
 
-st.title("📈 SUNGHO Scanner")
+st.markdown('<div class="scanner-hero"><div class="eyebrow">SUNGHO · MARKET WORKSPACE</div><div class="brand">투자의 근거를 한눈에.</div><div class="description">종목 탐색 · 매매 시나리오 · 보유종목 관리<br>가격과 수급의 변화를 확인하고, 판단의 근거를 기록하세요.</div></div>',unsafe_allow_html=True)
 st.caption("iPhone/PC 한국주식 단타·스윙 후보 스캐너 · RC15 검증 진행 중 · 빌드 "+build_id())
 now_kst=dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
 st.caption(f"⏱ 화면 기준시각(KST) {now_kst:%Y-%m-%d %H:%M:%S} · " + ("🟡 KIS 인증정보 설정됨 · 연결 검증 필요" if kis_configured() else "🟡 일봉 모드 — KIS 키 연결 시 장중 현재가 활성화"))
