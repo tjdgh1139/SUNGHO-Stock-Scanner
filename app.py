@@ -78,6 +78,10 @@ def colored_quote(label,value,change):
 def styled_candidate_table(frame,currency="KRW"):
     price_cols=[c for c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표") if c in frame]
     style=frame.style.format({c:("{:,.0f}원" if currency=="KRW" else "${:,.2f}") for c in price_cols},na_rep="—")
+    pct_cols=[c for c in frame.columns if "%" in c or c=="등락률"]
+    if pct_cols:style=style.format({c:"{:+.2f}%" for c in pct_cols},na_rep="—")
+    score_cols=[c for c in frame.columns if "점수" in c or "손익비" in c]
+    if score_cols:style=style.format({c:"{:.1f}" for c in score_cols},na_rep="—")
     if "등락%" in frame:style=style.map(lambda v:"color: "+change_color(v),subset=["등락%"])
     return style
 
@@ -87,6 +91,25 @@ def _safe_num(v, default=0.0):
         return default if np.isnan(x) or np.isinf(x) else x
     except Exception:
         return default
+
+def candidate_cards(frame):
+    """Compact, escaped summary cards; preserve ranking and source status."""
+    cards=[]
+    for rank,(_,row) in enumerate(frame.head(5).iterrows(),1):
+        name=html.escape(str(row.get("종목","-")))
+        code=html.escape(str(row.get("코드","-")))
+        status=html.escape(str(row.get("상태","판단보류")))
+        confidence=html.escape(str(row.get("데이터신뢰도","일봉/지연")))
+        price=_safe_num(row.get("현재가",row.get("종가",0)))
+        change=_safe_num(row.get("등락%",0))
+        score=_safe_num(row.get("실시간단타점수",row.get("단타점수",row.get("점수",0))))
+        tone="up" if change>0 else "down" if change<0 else "flat"
+        cards.append(f'<article class="candidate-card"><div class="card-rank">TOP {rank} · {code}</div>'
+                     f'<div class="card-name">{name}</div><div class="card-price">{price:,.0f}<span> 원</span></div>'
+                     f'<div class="card-change {tone}">{change:+.2f}%</div>'
+                     f'<div class="card-score">단타 점수 <strong>{score:.1f}</strong><span> / 100</span></div>'
+                     f'<div class="card-status">{status}</div><div class="card-source">{confidence}</div></article>')
+    return '<div class="candidate-grid">'+''.join(cards)+'</div>'
 
 def strategy_scores(row):
     base=_safe_num(row.get("점수",row.get("score",0)))
@@ -913,10 +936,10 @@ st.markdown("""
 .block-container {padding-top: 1.5rem; padding-bottom: 5rem; max-width: 1280px;}
 h1 {font-size: 2rem !important; margin-bottom: .3rem; letter-spacing: -.04em;}
 h2, h3 {font-size: 1.25rem !important; letter-spacing: -.025em;}
-.scanner-hero {padding: 26px 28px; border-radius: 20px; background: linear-gradient(115deg,#101c33,#203e5d); color: #f8fafc; margin-bottom: 18px; box-shadow: 0 8px 24px rgba(15,23,42,.12);}
-.scanner-hero .eyebrow {font-size: 12px; font-weight: 700; color: #91c6ef; letter-spacing: .16em; margin-bottom: 9px;}
-.scanner-hero .brand {font-size: 30px; font-weight: 800; letter-spacing: -.04em; line-height: 1.3;}
-.scanner-hero .description {font-size: 15px; color: #d1e0ee; margin-top: 9px; line-height: 1.6;}
+.scanner-hero {display:flex; align-items:center; gap:16px; padding: 16px 20px; border-radius: 20px; background: linear-gradient(115deg,#101c33,#203e5d); color: #f8fafc; margin-bottom: 10px; box-shadow: 0 8px 24px rgba(15,23,42,.12);}
+.scanner-hero .eyebrow {font-size: 12px; font-weight: 700; color: #d4bb82; letter-spacing: .16em; margin-bottom: 4px;}
+.scanner-hero .brand {font-size: 23px; font-weight: 700; letter-spacing: -.04em; line-height: 1.3;}
+.scanner-hero .description {font-size: 15px; color: #d1e0ee; margin-top: 4px; line-height: 1.6;}
 div[data-testid="stExpander"] {border-radius: 16px; margin-top: 12px; border-color: rgba(128,128,128,.22);}
 div[data-testid="stCaptionContainer"] p {font-size: 14px; line-height: 1.6; opacity: .95;}
 div[data-testid="stMetric"] {
@@ -933,6 +956,23 @@ section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
 section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
     font-size: 16px;
 }
+.owl-mark {width:48px; height:48px; flex-shrink:0; color:#d4bb82;}
+.candidate-grid {display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin:8px 0 18px;}
+.candidate-card {background:#142239; border:1px solid #30415a; border-radius:14px; padding:16px; color:#f1f5f9; min-width:0;}
+.card-rank {color:#d4bb82; font-size:12px; font-weight:600; letter-spacing:.05em;}
+.card-name {font-size:17px; font-weight:700; margin:10px 0 8px; overflow-wrap:anywhere;}
+.card-price {font-size:22px; font-weight:700; font-variant-numeric:tabular-nums;}
+.card-price span,.card-score span {font-size:12px; color:#b4c2d4;}
+.card-change {font-size:16px; font-weight:600; margin:2px 0 12px;}
+.card-change.up {color:#ff838b;} .card-change.down {color:#80b3ff;} .card-change.flat {color:#cbd5e1;}
+.card-score {font-size:13px; color:#d5deea; border-top:1px solid #34445d; padding-top:10px;}
+.card-score strong {font-size:20px; color:#f8fafc;}
+.card-status {font-size:13px; margin-top:8px; font-weight:600;}
+.card-source {font-size:12px; color:#b4c2d4; margin-top:4px;}
+@media (max-width:1000px) {
+    .candidate-grid {display:flex; overflow-x:auto; scroll-snap-type:x proximity; padding-bottom:8px;}
+    .candidate-card {flex:0 0 190px; scroll-snap-align:start;}
+}
 .stButton > button {
     min-height: 48px;
     border-radius: 14px;
@@ -946,8 +986,8 @@ div[data-testid="stDataFrame"] {border-radius: 12px; overflow: hidden;}
 @media (max-width: 700px) {
     .block-container {padding-left: .75rem; padding-right: .75rem; padding-top: .6rem;}
     h1 {font-size: 1.45rem !important;}
-    .scanner-hero {padding: 20px 18px; border-radius: 16px;}
-    .scanner-hero .brand {font-size: 25px;}
+    .scanner-hero {padding: 14px; border-radius: 16px;}
+    .scanner-hero .brand {font-size: 20px;}
     div[data-testid="column"] {min-width: 0 !important;}
 }
 </style>
@@ -1821,7 +1861,7 @@ def market_sidebar():
 with st.sidebar:
     market_sidebar()
 
-st.markdown('<div class="scanner-hero"><div class="eyebrow">SUNGHO · MARKET WORKSPACE</div><div class="brand">투자의 근거를 한눈에.</div><div class="description">종목 탐색 · 매매 시나리오 · 보유종목 관리<br>가격과 수급의 변화를 확인하고, 판단의 근거를 기록하세요.</div></div>',unsafe_allow_html=True)
+st.markdown('<div class="scanner-hero"><svg class="owl-mark" viewBox="0 0 64 64" fill="none" aria-label="부엉이 심볼" role="img"><path d="M10 8l13 9h18l13-9v27c0 15-10 23-22 23S10 50 10 35V8Z" stroke="currentColor" stroke-width="2.5"/><circle cx="23" cy="30" r="10" stroke="currentColor" stroke-width="2"/><circle cx="41" cy="30" r="10" stroke="currentColor" stroke-width="2"/><circle cx="23" cy="30" r="3" fill="currentColor"/><circle cx="41" cy="30" r="3" fill="currentColor"/><path d="m28 40 4 6 4-6M23 51h18" stroke="currentColor" stroke-width="2"/></svg><div><div class="eyebrow">SUNGHO · STOCK SCANNER</div><div class="brand">시장을 읽고, 근거로 판단하다.</div><div class="description">종목 탐색 · 매매 시나리오 · 보유종목 관리</div></div></div>',unsafe_allow_html=True)
 st.caption("iPhone/PC 한국주식 단타·스윙 후보 스캐너 · RC15 검증 진행 중 · 빌드 "+build_id())
 now_kst=dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
 st.caption(f"⏱ 화면 기준시각(KST) {now_kst:%Y-%m-%d %H:%M:%S} · " + ("🟡 KIS 인증정보 설정됨 · 연결 검증 필요" if kis_configured() else "🟡 일봉 모드 — KIS 키 연결 시 장중 현재가 활성화"))
@@ -1859,11 +1899,12 @@ if auto_live and not st.session_state.get("watch_candidates",st.session_state.sc
     except Exception:
         pass
 
-if st.button("🔄 데이터 캐시 초기화", use_container_width=True):
+scan_action,cache_action=st.columns([3,1])
+if cache_action.button("캐시 초기화", use_container_width=True):
     st.cache_data.clear()
     st.success("캐시를 비웠습니다. 다음 스캔에서 데이터를 새로 요청합니다.")
 
-if st.button("🚀 지금 스캔",type="primary",use_container_width=True):
+if scan_action.button("🚀 지금 스캔",type="primary",use_container_width=True):
     if not markets:
         st.warning("시장을 선택하세요.")
     else:
@@ -1913,21 +1954,15 @@ if not df.empty:
         st.caption(f"🔄 TOP {focus_n} 자동 재평가: {st.session_state.last_live_refresh:%H:%M:%S} KST · {refresh_sec}초 주기")
     elif auto_live:
         st.caption("🟡 자동 재평가 대기 — KIS 연결/첫 스캔 후 활성화")
-    top=df.head(10)
-    st.subheader("🔥 TOP 10")
-    for _,r in top.iterrows():
-        with st.container(border=True):
-            c1,c2,c3=st.columns([2.1,1,1])
-            c1.markdown(f"**{r['종목']}**  \n`{r['코드']}` · {r['셋업']}")
-            c2.metric("단타점수",f"{r.get('실시간단타점수',r.get('단타점수',r['점수']))}")
-            with c3:colored_quote("등락",f"{r['등락%']}%",r["등락%"])
-            freshness="최근 KIS 수신" if data_confidence(r)!="DAILY/DELAYED" else "일봉/지연"
-            st.caption(f"{r.get('상태','-')} · {r.get('데이터신뢰도','-')} · 가격:{freshness} · 거래량 {r['거래량x']}x · RSI {r['RSI']} · 20일선 이격 {r['20일이격%']}%")
-            st.caption(r["체크"])
-
-    st.subheader("📋 전체 후보")
-    mobile_cols=["종목","실시간단타점수","스윙점수","장기점수","상태","데이터신뢰도","분석무결성","종가","등락%","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","거래량x","RSI"]
-    st.dataframe(styled_candidate_table(df[mobile_cols],"KRW"),hide_index=True,use_container_width=True)
+    st.subheader("TOP 5 · 우선 비교")
+    st.markdown(candidate_cards(df),unsafe_allow_html=True)
+    st.caption("현재 순위의 후보 · 점수는 수익 확률이 아닙니다. 모바일에서는 카드를 좌우로 넘겨 비교하세요.")
+    comparison_cols=["종목","매수하단","매수상단","손절가","1차목표","비용반영손익비","상태"]
+    comparison_cols=[c for c in comparison_cols if c in df.columns]
+    st.dataframe(styled_candidate_table(df.head(5)[comparison_cols],"KRW"),hide_index=True,use_container_width=True)
+    with st.expander(f"전체 후보 {len(df)}개 · 점수와 매매 구간 비교",expanded=False):
+        mobile_cols=["종목","실시간단타점수","스윙점수","장기점수","상태","데이터신뢰도","분석무결성","종가","등락%","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","거래량x","RSI"]
+        st.dataframe(styled_candidate_table(df[[c for c in mobile_cols if c in df.columns]],"KRW"),hide_index=True,use_container_width=True)
 
     st.subheader("🔎 상세 분석")
     opts={f"{r['종목']} ({r['코드']})":r["코드"] for _,r in df.iterrows()}
@@ -1935,18 +1970,29 @@ if not df.empty:
     t=opts[label]; row=df[df["코드"]==t].iloc[0]
     end=business_day()
     h=prices(t,ymd(end-dt.timedelta(days=180)),ymd(end))
-    if not h.empty:
-        h=h.copy()
-        h["MA5"]=h["종가"].rolling(5).mean()
-        h["MA20"]=h["종가"].rolling(20).mean()
-        h["MA60"]=h["종가"].rolling(60).mean()
+    chart_panel,evidence_panel=st.columns([2.2,1])
+    with evidence_panel:
+        st.markdown("**선택 종목 · 판단 근거**")
+        st.write(str(row.get("상태","판단보류")))
+        st.caption("데이터: "+str(row.get("데이터신뢰도","일봉/지연")))
+        st.write(str(row.get("셋업","-")))
+        st.caption(str(row.get("체크","")))
+        st.metric("비용 반영 손익비",f"{_safe_num(row.get('비용반영손익비',0)):.2f}")
+        st.caption(str(row.get("진입위험사유","")) or "아래 실시간 체결·호가와 매매 시나리오를 확인하세요.")
+    with chart_panel:
+        if not h.empty:
+            h=h.copy()
+            h["MA5"]=h["종가"].rolling(5).mean()
+            h["MA20"]=h["종가"].rolling(20).mean()
+            h["MA60"]=h["종가"].rolling(60).mean()
 
-        h=decorate_chart(h)
-        st.caption("캔들: 상승 빨강 · 하락 파랑 | 20일선: 주황 · 5일선: 보라 · 60일선: 초록 · BB: 회색")
-        st.plotly_chart(candle_chart(h,title=f"{label} 일봉"),use_container_width=True,
-                        config={"displaylogo":False,"scrollZoom":False})
-        st.line_chart(h[["MACD","MACD_SIGNAL","MACD_OSC"]].dropna())
-        st.line_chart(h[["RSI"]].dropna())
+            h=decorate_chart(h)
+            st.caption("캔들: 상승 빨강 · 하락 파랑 | 20일선: 주황 · 5일선: 보라 · 60일선: 초록 · BB: 회색")
+            st.plotly_chart(candle_chart(h,title=f"{label} 일봉"),use_container_width=True,
+                            config={"displaylogo":False,"scrollZoom":False})
+            with st.expander("MACD · RSI 보조지표",expanded=False):
+                st.line_chart(h[["MACD","MACD_SIGNAL","MACD_OSC"]].dropna())
+                st.line_chart(h[["RSI"]].dropna())
 
     with st.expander("KIS 당일 분봉",expanded=False):
         if st.button("분봉 갱신",key=f"minute_{t}",use_container_width=True):
