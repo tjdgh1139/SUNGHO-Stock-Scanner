@@ -3,6 +3,7 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from pathlib import Path
 import csv
 from datetime import datetime, timezone
@@ -75,15 +76,30 @@ def colored_quote(label,value,change):
     color=change_color(change)
     st.markdown(f'<div style="border:1px solid #ddd;border-radius:12px;padding:10px"><span style="font-size:16px;font-weight:700">{html.escape(str(label))}</span><br><span style="font-size:2rem;font-weight:700;color:{color}">{html.escape(str(value))}</span><br><span style="font-size:16px;font-weight:600;color:{color}">{_safe_num(change):+.2f}%</span></div>',unsafe_allow_html=True)
 
+def candidate_formats(frame,currency="KRW"):
+    formats={}
+    for c in frame.columns:
+        if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표"):
+            formats[c]="%,.0f원" if currency=="KRW" else "$%,.2f"
+        elif "%" in c or c=="등락률":formats[c]="%+.2f%%"
+        elif "손익비" in c:formats[c]="%.2f"
+        elif "점수" in c or c in ("거래량x","RSI"):formats[c]="%.1f"
+    return formats
+
 def styled_candidate_table(frame,currency="KRW"):
-    price_cols=[c for c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표") if c in frame]
-    style=frame.style.format({c:("{:,.0f}원" if currency=="KRW" else "${:,.2f}") for c in price_cols},na_rep="—")
-    pct_cols=[c for c in frame.columns if "%" in c or c=="등락률"]
-    if pct_cols:style=style.format({c:"{:+.2f}%" for c in pct_cols},na_rep="—")
-    score_cols=[c for c in frame.columns if "점수" in c or "손익비" in c]
-    if score_cols:style=style.format({c:"{:.1f}" for c in score_cols},na_rep="—")
+    # One format call: later Styler.format calls otherwise reset earlier columns.
+    formats={c:("{:,.0f}원" if currency=="KRW" else "${:,.2f}") for c in frame.columns
+             if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표")}
+    formats.update({c:"{:+.2f}%" for c in frame.columns if "%" in c or c=="등락률"})
+    formats.update({c:"{:.1f}" for c in frame.columns if "점수" in c or c in ("거래량x","RSI")})
+    formats.update({c:"{:.2f}" for c in frame.columns if "손익비" in c})
+    style=frame.style.format(formats,na_rep="—")
     if "등락%" in frame:style=style.map(lambda v:"color: "+change_color(v),subset=["등락%"])
     return style
+
+def show_candidate_table(frame,currency="KRW"):
+    config={c:st.column_config.NumberColumn(c,format=fmt) for c,fmt in candidate_formats(frame,currency).items()}
+    st.dataframe(styled_candidate_table(frame,currency),column_config=config,hide_index=True,use_container_width=True)
 
 def _safe_num(v, default=0.0):
     try:
@@ -1863,8 +1879,27 @@ with st.sidebar:
 
 st.markdown('<div class="scanner-hero"><svg class="owl-mark" viewBox="0 0 64 64" fill="none" aria-label="부엉이 심볼" role="img"><path d="M10 8l13 9h18l13-9v27c0 15-10 23-22 23S10 50 10 35V8Z" stroke="currentColor" stroke-width="2.5"/><circle cx="23" cy="30" r="10" stroke="currentColor" stroke-width="2"/><circle cx="41" cy="30" r="10" stroke="currentColor" stroke-width="2"/><circle cx="23" cy="30" r="3" fill="currentColor"/><circle cx="41" cy="30" r="3" fill="currentColor"/><path d="m28 40 4 6 4-6M23 51h18" stroke="currentColor" stroke-width="2"/></svg><div><div class="eyebrow">SUNGHO · STOCK SCANNER</div><div class="brand">시장을 읽고, 근거로 판단하다.</div><div class="description">종목 탐색 · 매매 시나리오 · 보유종목 관리</div></div></div>',unsafe_allow_html=True)
 st.caption("iPhone/PC 한국주식 단타·스윙 후보 스캐너 · RC15 검증 진행 중 · 빌드 "+build_id())
-now_kst=dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
-st.caption(f"⏱ 화면 기준시각(KST) {now_kst:%Y-%m-%d %H:%M:%S} · " + ("🟡 KIS 인증정보 설정됨 · 연결 검증 필요" if kis_configured() else "🟡 일봉 모드 — KIS 키 연결 시 장중 현재가 활성화"))
+components.html("""
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><style>
+body{margin:0;font-family:system-ui,-apple-system,sans-serif;color:#f1f5f9;}
+.clocks{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.clock{background:#142239;border:1px solid #30415a;border-radius:12px;padding:10px 14px;}
+.label{color:#d4bb82;font-size:12px;font-weight:600;}.time{font-size:23px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:.04em;margin-top:3px;}.date{font-size:12px;color:#b4c2d4;margin-top:2px;}
+@media(max-width:450px){.time{font-size:20px}.clock{padding:9px 10px}.label{font-size:11px}}
+</style></head><body><div class="clocks">
+<div class="clock"><div class="label">한국 · KST</div><div class="time" id="kr-time">--:--:--</div><div class="date" id="kr-date">시각 확인 중</div></div>
+<div class="clock"><div class="label">미국 서부 · PT</div><div class="time" id="us-time">--:--:--</div><div class="date" id="us-date">시각 확인 중</div></div>
+</div><script>
+const zones=[['kr','Asia/Seoul'],['us','America/Los_Angeles']];
+const formats=zones.map(([id,timeZone])=>({id,
+ time:new Intl.DateTimeFormat('en-GB',{timeZone,hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}),
+ date:new Intl.DateTimeFormat('ko-KR',{timeZone,year:'numeric',month:'2-digit',day:'2-digit',weekday:'short'})}));
+function tick(){const now=new Date();for(const f of formats){document.getElementById(f.id+'-time').textContent=f.time.format(now);document.getElementById(f.id+'-date').textContent=f.date.format(now);}}
+tick();setInterval(tick,1000);document.addEventListener('visibilitychange',tick);
+</script></body></html>
+""",height=100,scrolling=False)
+st.caption("시계는 기기 시간을 기준으로 매초 갱신 · 미국 서부 서머타임 자동 적용 · 시세 수신시각과 별도")
+st.caption("🟡 KIS 인증정보 설정됨 · 연결 검증 필요" if kis_configured() else "🟡 일봉 모드 — KIS 키 연결 시 장중 현재가 활성화")
 
 if fdr is None:
     st.error("서버에 FinanceDataReader 설치가 필요합니다.")
@@ -1934,7 +1969,7 @@ with st.expander("🌎 지수·선물·환율",expanded=False):
 
 with st.expander("🇺🇸 미국 단타·스윙·장기 후보",expanded=False):
     if not st.session_state.us_scan.empty:
-        st.dataframe(styled_candidate_table(st.session_state.us_scan[["종목","단타점수","스윙점수","장기점수","현재가","매수하단","매수상단","손절가","1차목표","2차목표","상태"]] if "현재가" in st.session_state.us_scan else st.session_state.us_scan,"USD"),hide_index=True,use_container_width=True)
+        show_candidate_table(st.session_state.us_scan[["종목","단타점수","스윙점수","장기점수","현재가","매수하단","매수상단","손절가","1차목표","2차목표","상태"]] if "현재가" in st.session_state.us_scan else st.session_state.us_scan,"USD")
     else:st.info("스캔 실행 후 미국 관심종목 결과가 표시됩니다.")
     if not st.session_state.us_scan.empty:
         symbol=st.selectbox("미국 차트 종목",st.session_state.us_scan["코드"].astype(str).tolist(),key="us_chart_symbol")
@@ -1959,10 +1994,10 @@ if not df.empty:
     st.caption("현재 순위의 후보 · 점수는 수익 확률이 아닙니다. 모바일에서는 카드를 좌우로 넘겨 비교하세요.")
     comparison_cols=["종목","매수하단","매수상단","손절가","1차목표","비용반영손익비","상태"]
     comparison_cols=[c for c in comparison_cols if c in df.columns]
-    st.dataframe(styled_candidate_table(df.head(5)[comparison_cols],"KRW"),hide_index=True,use_container_width=True)
+    show_candidate_table(df.head(5)[comparison_cols],"KRW")
     with st.expander(f"전체 후보 {len(df)}개 · 점수와 매매 구간 비교",expanded=False):
         mobile_cols=["종목","실시간단타점수","스윙점수","장기점수","상태","데이터신뢰도","분석무결성","종가","등락%","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","거래량x","RSI"]
-        st.dataframe(styled_candidate_table(df[[c for c in mobile_cols if c in df.columns]],"KRW"),hide_index=True,use_container_width=True)
+        show_candidate_table(df[[c for c in mobile_cols if c in df.columns]],"KRW")
 
     st.subheader("🔎 상세 분석")
     opts={f"{r['종목']} ({r['코드']})":r["코드"] for _,r in df.iterrows()}
