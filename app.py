@@ -1193,6 +1193,10 @@ def parse_futures_packet(message,expected_code):
                     "수신시각":pd.Timestamp.now(tz="UTC").isoformat()})
     return out
 
+@st.cache_resource(show_spinner=False)
+def websocket_owners():
+    return threading.Lock(), {}
+
 class KISLiveTape:
     """One-symbol KRX/NXT/unified trade, quote and program monitor with reconnect."""
     def __init__(self):
@@ -1231,6 +1235,19 @@ class KISLiveTape:
             self.acknowledged.clear()
 
     def start(self, code, appkey, appsecret, market="UN"):
+        owner_lock,owners=websocket_owners()
+        key_hash=hashlib.sha256(str(appkey).encode()).hexdigest()
+        with owner_lock:
+            previous=owners.get(key_hash)
+            if previous is not None and previous is not self:
+                previous.stop()
+                if previous.thread and previous.thread.is_alive():
+                    self.error="기존 실시간 연결 종료 대기 중"
+                    return
+            owners[key_hash]=self
+            self._start_owned(code,appkey,appsecret,market)
+
+    def _start_owned(self, code, appkey, appsecret, market="UN"):
         code=str(code).zfill(6)
         if self.thread and self.thread.is_alive() and self.code==code and self.market==market:
             return
@@ -1329,6 +1346,10 @@ class KISLiveTape:
                             with self.lock:
                                 self.subscription_code=safe_code
                                 self.error=f"KIS 구독 거절: {safe_code}"
+                            if safe_code=="OPSP8996":
+                                with self.lock:self.error="OPSP8996 · 같은 App Key의 기존 연결 사용 중 · 자동 재시도 중지"
+                                self.stop_event.set()
+                                ws.close()
                     except Exception:
                         pass
             except Exception as e:
