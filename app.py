@@ -136,7 +136,8 @@ def enrich_scan_dataframe(df):
     out=df.copy(); rows=[]
     for _,r in out.iterrows():
         d=r.to_dict(); z={}; z.update(strategy_scores(d)); z.update(actionable_levels(d))
-        z["상태"]=execution_permission(d,row_live_health(d)); z["데이터신뢰도"]=data_confidence(d); rows.append(z)
+        z["상태"]=execution_permission(d,row_live_health(d)); z["진입위험사유"]=entry_risk_reason(d)
+        z["데이터신뢰도"]=data_confidence(d); rows.append(z)
     a=pd.DataFrame(rows,index=out.index)
     for c in a.columns:out[c]=a[c]
     return out
@@ -312,12 +313,40 @@ def row_live_health(row):
                        timestamp_fresh(row.get("trade_received_utc")) and timestamp_fresh(row.get("book_received_utc")),
                        timestamp_fresh(row.get("program_received_utc")))
 
+def entry_risk_reason(row):
+    change=_safe_num(row.get("등락률",row.get("등락%",0)))
+    separation=_safe_num(row.get("20일이격",100),100)
+    rsi=_safe_num(row.get("RSI",50),50)
+    if change>=15 or separation>=115 or rsi>=80:
+        return "과열·추격 위험"
+    ask=_safe_num(row.get("매도1"));bid=_safe_num(row.get("매수1"))
+    if ask<=0 or bid<=0 or ask<bid:return "유효한 최우선 호가 없음"
+    if (ask-bid)/((ask+bid)/2)>.003:return "호가 간격 0.3% 초과"
+    return ""
+
+def holding_review(position, quote):
+    qty=_safe_num(position.get("수량"));avg=_safe_num(position.get("평단"))
+    px=_safe_num(quote.get("현재가"))
+    stop=_safe_num(position.get("손절가"));target=_safe_num(position.get("익절가"))
+    out={"코드":position.get("코드"),"종목":position.get("종목"),"수량":qty,"평단":avg,
+         "현재가":px or None,"평가손익":round((px-avg)*qty,2) if px>0 else None,
+         "수익률%":round((px/avg-1)*100,2) if px>0 and avg>0 else None,
+         "의견":"판단 보류","근거":"실제 체결 시각 확인 필요"}
+    if not timestamp_fresh(quote.get("trade_received_utc")):return out
+    if qty<=0 or avg<=0 or not 0<stop<avg<target:
+        out["근거"]="수량·평단·손절·익절 설정 확인 필요";return out
+    if px<=stop:out.update(의견="손절 조건 충족",근거="등록한 손절가 이하 · 실제 주문 체결 확인 필요")
+    elif px>=target:out.update(의견="일부 익절 검토",근거="등록한 목표가 도달 · 실제 주문 체결 확인 필요")
+    else:out.update(의견="보유 관찰",근거="등록한 가격 조건 사이 · 수급·뉴스 종합판단은 미검증")
+    return out
+
 def execution_permission(row, health=None, regime="NORMAL"):
     """Decision-support gate; does not place orders."""
     h=health or {"state":"OFFLINE"}
     score=fail_safe_score(row,h,regime)
     if h.get("state")!="LIVE" or data_confidence(row)=="DAILY/DELAYED":
         return "신규진입금지"
+    if entry_risk_reason(row):return "신규진입금지"
     if regime=="RISK-OFF" and score<88:
         return "신규진입금지"
     if score>=82 and data_confidence(row)!="DAILY/DELAYED":
@@ -1983,6 +2012,45 @@ if not df.empty:
                        file_name="sungho_scan.csv",mime="text/csv",use_container_width=True)
 else:
     st.info("위의 **지금 스캔** 버튼을 누르면 후보 종목이 표시됩니다.")
+
+with st.expander("💼 보유종목 관리", expanded=False):
+    st.caption("국내 종목 최대 5개 · 금액은 원 · 가격 조건 안내이며 자동 주문하지 않습니다. 평가손익은 비용 차감 전입니다.")
+    initial=st.session_state.setdefault("holdings",pd.DataFrame(columns=["코드","종목","수량","평단","손절가","익절가"]))
+    with st.form("holdings_form"):
+        edited=st.data_editor(initial,num_rows="dynamic",hide_index=True,use_container_width=True,
+                              column_config={"코드":st.column_config.TextColumn("코드 (6자리)")})
+        save=st.form_submit_button("보유종목 저장")
+    if save:
+        valid=edited.dropna(how="all").copy()
+        codes=valid["코드"].astype(str)
+        numeric=valid[["수량","평단","손절가","익절가"]].apply(pd.to_numeric,errors="coerce")
+        if len(valid)>5 or not codes.map(lambda x:len(x)==6 and x.isascii() and x.isdigit()).all() or codes.duplicated().any() or numeric.isna().any().any() or not ((numeric["수량"]>0)&(numeric["손절가"]>0)&(numeric["손절가"]<numeric["평단"])&(numeric["평단"]<numeric["익절가"])).all():
+            st.error("최대 5개·중복 없는 6자리 코드·양수 수량·손절가 < 평단 < 익절가를 입력하세요.")
+        else:
+            valid[numeric.columns]=numeric
+            st.session_state.holdings=valid
+            st.success("현재 세션에 저장했습니다. 재부팅 전 CSV를 내려받으세요.")
+    st.download_button("보유종목 CSV 백업",st.session_state.holdings.to_csv(index=False).encode("utf-8-sig"),"holdings.csv","text/csv")
+    restored=st.file_uploader("보유종목 CSV 복원",type=["csv"],key="holdings_restore")
+    if restored is not None and st.button("복원 내용을 입력표로 불러오기"):
+        try:
+            restored_df=pd.read_csv(restored,dtype={"코드":str})
+            required=["코드","종목","수량","평단","손절가","익절가"]
+            if not all(c in restored_df for c in required) or len(restored_df)>5:raise ValueError()
+            st.session_state.holdings=restored_df[required]
+            st.rerun()
+        except Exception:st.error("CSV 형식 확인 필요")
+    @st.fragment(run_every="5s")
+    def render_holdings_review():
+        positions=st.session_state.holdings
+        tape_data,connected,_=live_tape().snapshot()
+        rows=[]
+        for _,position in positions.iterrows():
+            quote=tape_data if connected and str(position["코드"])==tape_data.get("코드") else {}
+            rows.append(holding_review(position.to_dict(),quote))
+        if rows:st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+        st.caption("현재 WebSocket 감시 종목만 실제 체결을 반영합니다. 다종목 동시 구독·영구 저장·수급/뉴스 종합 권유는 아직 미구현입니다.")
+    render_holdings_review()
 
 with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
     st.dataframe(deployment_self_test(),hide_index=True,use_container_width=True)
