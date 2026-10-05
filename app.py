@@ -1971,9 +1971,17 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
     if st.button("WebSocket 검증 연결 시작 (삼성전자)",use_container_width=True):
         if kis_configured():live_tape().start("005930",secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
         else:st.warning("배포된 앱의 KIS 설정을 읽을 수 없습니다.")
-    tape_data,tape_connected,tape_error=live_tape().snapshot()
-    st.caption("WS 소켓: "+str(tape_connected)+" · 수신 체결/호가/프로그램: "+str([bool(tape_data.get(k)) for k in ["trade_received_utc","book_received_utc","program_received_utc"]]))
-    if tape_error:st.warning(tape_error)
+    @st.fragment(run_every="2s")
+    def render_verification_connection():
+        tape=live_tape()
+        tape_data,tape_connected,tape_error=tape.snapshot()
+        diagnostics=tape.diagnostics()
+        st.caption("WS 소켓: "+str(tape_connected)+" · 수신 체결/호가/프로그램: "+str([bool(tape_data.get(k)) for k in ["trade_received_utc","book_received_utc","program_received_utc"]]))
+        st.caption("구독승인: "+str(diagnostics["approved_channels"])+" · 재연결: "+str(diagnostics["reconnect_count"])+
+                   " · 구독응답코드: "+str(diagnostics["subscription_code"] or "없음")+
+                   " · 연결종료코드: "+str(diagnostics["close_code"] or "없음"))
+        if tape_error:st.warning(tape_error)
+    render_verification_connection()
     if st.button("🔌 KIS 라이브 최종 테스트",use_container_width=True):
         gate_df,sok,lok,lmsg=live_release_gate()
         st.dataframe(gate_df,hide_index=True,use_container_width=True)
