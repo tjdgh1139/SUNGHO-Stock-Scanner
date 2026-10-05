@@ -135,7 +135,7 @@ def enrich_scan_dataframe(df):
     if df is None or len(df)==0:return df
     out=df.copy(); rows=[]
     for _,r in out.iterrows():
-        d=r.to_dict(); z={}; z.update(strategy_scores(d)); z.update(actionable_levels(d))
+        d=r.to_dict(); z={}; z.update(strategy_scores(d)); z.update(actionable_levels(d));z.update(entry_quality(d))
         z["상태"]=execution_permission(d,row_live_health(d)); z["진입위험사유"]=entry_risk_reason(d)
         z["데이터신뢰도"]=data_confidence(d); rows.append(z)
     a=pd.DataFrame(rows,index=out.index)
@@ -322,7 +322,22 @@ def entry_risk_reason(row):
     ask=_safe_num(row.get("매도1"));bid=_safe_num(row.get("매수1"))
     if ask<=0 or bid<=0 or ask<bid:return "유효한 최우선 호가 없음"
     if (ask-bid)/((ask+bid)/2)>.003:return "호가 간격 0.3% 초과"
+    if entry_quality(row)["비용반영손익비"]<1.5:return "비용·저항 반영 손익비 1.5 미만"
     return ""
+
+def entry_quality(row):
+    levels=actionable_levels(row)
+    entry=_safe_num(row.get("매도1")) or _safe_num(levels.get("매수관심상단"))
+    stop=_safe_num(levels.get("손절기준"));target=_safe_num(levels.get("1차익절"))
+    resistance=_safe_num(row.get("저항"))
+    capped=entry<resistance<target
+    if capped:target=resistance
+    cost=entry*.004
+    risk=entry-stop+cost
+    ratio=max(0,(target-entry-cost)/risk) if entry>stop>0 and risk>0 else 0
+    return {"비용반영손익비":round(ratio,2),"진입검토목표":target,
+            "목표근거":"최근 20일 고가 저항" if capped else "ATR 시나리오·도달 미검증",
+            "왕복비용가정%":0.4}
 
 def holding_review(position, quote):
     qty=_safe_num(position.get("수량"));avg=_safe_num(position.get("평단"))
