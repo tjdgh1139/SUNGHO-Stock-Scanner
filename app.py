@@ -379,6 +379,36 @@ def entry_quality(row):
             "목표근거":"최근 20일 고가 저항" if capped else "ATR 시나리오·도달 미검증",
             "왕복비용가정%":0.4}
 
+class HoldingNameCatalog:
+    """An optional directory lookup must never hold up the app's main thread."""
+    def __init__(self):
+        self.lock=threading.Lock()
+        self.names={"000660":"SK하이닉스","002995":"금호건설우","005930":"삼성전자"}
+        self.started=False
+        self.status="준비"
+    def snapshot(self,loader):
+        with self.lock:
+            if not self.started:
+                self.started=True
+                self.status="목록 조회 중 · 화면 사용 가능"
+                threading.Thread(target=self._load,args=(loader,),daemon=True).start()
+            return dict(self.names),self.status
+    def _load(self,loader):
+        try:
+            frame=loader()
+            if "Code" not in frame and "Symbol" in frame:frame=frame.rename(columns={"Symbol":"Code"})
+            if not {"Code","Name"}.issubset(frame.columns) or frame.empty:raise ValueError("empty directory")
+            names=dict(zip(frame["Code"].astype(str).str.zfill(6),frame["Name"].astype(str)))
+            with self.lock:
+                self.names.update(names)
+                self.status="종목명 목록 준비 완료"
+        except Exception:
+            with self.lock:self.status="종목명 목록 조회 실패 · 직접 입력 가능"
+
+@st.cache_resource
+def holding_name_catalog():
+    return HoldingNameCatalog()
+
 def fill_holding_names(frame, names):
     out=frame.copy()
     for idx,row in out.iterrows():
@@ -938,7 +968,12 @@ def ensure_dart_map():
         diagnostics["DART_MAPPING"]="NOT_CONFIGURED"
         return False
     try:
-        _DART_CORP_MAP=dart_corporations(secret_value("DART_API_KEY"))
+        for attempt in range(2):
+            try:
+                _DART_CORP_MAP=dart_corporations(secret_value("DART_API_KEY"))
+                break
+            except (requests.Timeout,requests.ConnectionError):
+                if attempt:raise
         st.session_state.dart_corp_map=_DART_CORP_MAP
         st.session_state.setdefault("feed_diagnostics",{})["DART_MAPPING"]="PASS" if _DART_CORP_MAP else "EMPTY"
         return bool(_DART_CORP_MAP)
@@ -2355,10 +2390,9 @@ else:
 with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("holdings",pd.DataFrame()).empty):
     st.caption("코드·수량·평단을 입력하세요. 손절·목표가는 차트 분석으로 자동 계산합니다. 최대 5종목 · 원 · 자동 주문 없음 · 비용 차감 전 손익")
     initial=st.session_state.setdefault("holdings",pd.DataFrame(columns=["코드","종목","수량","평단","손절가","익절가"]))
-    if "holdings_names" not in st.session_state:
-        stock_list=listing()
-        names=dict(zip(stock_list["Code"].astype(str).str.zfill(6),stock_list["Name"])) if {"Code","Name"}.issubset(stock_list.columns) else {}
-        st.session_state.holdings_names=names
+    names,name_status=holding_name_catalog().snapshot(lambda:fdr.StockListing("KRX") if fdr else pd.DataFrame())
+    st.session_state.holdings_names=names
+    st.caption(name_status)
     st.session_state.setdefault("holdings_draft",initial.copy())
     editor_key="holdings_editor_"+str(st.session_state.get("holdings_editor_revision",0))
     edited=st.data_editor(st.session_state.holdings_draft,num_rows="dynamic",hide_index=True,use_container_width=True,
@@ -2474,7 +2508,13 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
             dart_recent_disclosures(dart_corp_code("005930"),days=30)
         refresh_news_candidates(pd.DataFrame([{"코드":"005930","종목":"삼성전자"}]),ttl=0)
         st.caption("삼성전자 최근 30일 공시로 연결 검사 · 스캔 점수에는 기존 최근 2일 기준 유지. NO_DISCLOSURES는 정상 응답이지만 기간 내 공시 없음입니다.")
-        st.write(st.session_state.get("feed_diagnostics",{}))
+        st.session_state.feed_check_result=dict(st.session_state.get("feed_diagnostics",{}))
+        st.session_state.feed_check_time=pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S KST")
+    if "feed_check_result" in st.session_state:
+        st.caption("마지막 수동 연결 점검: "+st.session_state.get("feed_check_time",""))
+        st.write(st.session_state.feed_check_result)
+        if st.session_state.feed_check_result.get("DART_MAPPING") in ["ConnectTimeout","ReadTimeout","ConnectionError"]:
+            st.warning("DART 네트워크 연결 실패 · 2회 시도 후 중단. 키 유효성은 아직 확인되지 않았습니다. 서버 연결 확인 또는 공식 종목매핑 CSV가 필요합니다.")
     st.caption("뉴스 자동 수집: NAVER_CLIENT_ID·NAVER_CLIENT_SECRET이 설정되면 실행. CSV 피드도 계속 지원합니다.")
     evidence=st.file_uploader("외부 배포 검증 증거 JSON",type=["json"],key="deploy_evidence")
     if evidence is not None and st.button("배포 검증 증거 적용",use_container_width=True):
