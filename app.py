@@ -399,22 +399,42 @@ def holdings_editor_changed(key):
 
 def validate_holdings(frame):
     required=["코드","종목","수량","평단","손절가","익절가"]
-    if not isinstance(frame,pd.DataFrame) or not all(c in frame for c in required):
+    if not isinstance(frame,pd.DataFrame) or not all(c in frame for c in required[:4]):
         raise ValueError("보유종목 필수 열 확인 필요")
+    frame=frame.dropna(how="all").copy()
+    for col in ["손절가","익절가"]:
+        if col not in frame:frame[col]=0
     out=frame[required].dropna(how="all").copy()
     if len(out)>5:raise ValueError("최대 5종목")
     codes=out["코드"].astype(str).str.strip()
     numbers=out[["수량","평단","손절가","익절가"]].apply(pd.to_numeric,errors="coerce")
     valid_codes=codes.map(lambda x:len(x)==6 and x.isascii() and x.isdigit()).all() and not codes.duplicated().any()
+    numbers[["손절가","익절가"]]=numbers[["손절가","익절가"]].fillna(0)
     valid_numbers=np.isfinite(numbers.to_numpy(dtype=float)).all()
-    valid_levels=((numbers["수량"]>0)&(numbers["수량"]%1==0)&(numbers["손절가"]>0)&
-                  (numbers["손절가"]<numbers["평단"])&(numbers["평단"]<numbers["익절가"])).all()
+    valid_levels=((numbers["수량"]>0)&(numbers["수량"]%1==0)&(numbers["평단"]>0)&
+                  (numbers["손절가"]>=0)&(numbers["익절가"]>=0)).all()
     if not valid_codes or not valid_numbers or not valid_levels:
-        raise ValueError("중복 없는 6자리 코드·양의 정수 수량·손절가 < 평단 < 익절가 확인 필요")
+        raise ValueError("중복 없는 6자리 코드·양의 정수 수량·양의 평단 확인 필요")
     out["코드"]=codes;out[numbers.columns]=numbers
     return out
 
-def holding_review(position, quote):
+def holding_chart_plan(row):
+    close=_safe_num(row.get("종가"));volatility=_safe_num(row.get("ATR"))
+    stamp=pd.to_datetime(row.get("기술기준일"),utc=True,errors="coerce")
+    age=(pd.Timestamp.now(tz="UTC")-stamp).total_seconds() if not pd.isna(stamp) else float("inf")
+    if close<=0 or volatility<=0 or not 0<=age<=7*86400:return {}
+    support=_safe_num(row.get("지지"))
+    stop=max(close*.01,min(close-volatility, support-volatility*.3 if support>0 else close-volatility))
+    resistance=_safe_num(row.get("저항"))
+    target=min(close+2*volatility,resistance) if resistance>close else close+2*volatility
+    return {"손절가":round(stop),"익절가":round(target),"기술기준일":str(row.get("기술기준일")),
+            "계산근거":"20일 지지·저항 및 ATR · 일봉 기준 고정 시나리오", "분석시각":pd.Timestamp.now(tz="UTC").isoformat()}
+
+def holding_review(position, quote, plan=None):
+    plan=plan or {}
+    position=dict(position)
+    if plan:
+        position.update({k:plan[k] for k in ["손절가","익절가"]})
     qty=_safe_num(position.get("수량"));avg=_safe_num(position.get("평단"))
     px=_safe_num(quote.get("현재가"))
     stop=_safe_num(position.get("손절가"));target=_safe_num(position.get("익절가"))
@@ -428,11 +448,20 @@ def holding_review(position, quote):
          "프로그램수신":"확인" if timestamp_fresh(quote.get("program_received_utc"),120) else "미확인",
          "의견":"판단 보류","근거":"실제 체결 시각 확인 필요"}
     if not fresh:return out
-    if qty<=0 or avg<=0 or not 0<stop<avg<target:
-        out["근거"]="수량·평단·손절·익절 설정 확인 필요";return out
+    out["기술기준일"]=plan.get("기술기준일","미분석")
+    out["자동기준근거"]=plan.get("계산근거","차트 기준 분석 필요")
+    out["목표대비평단%"] = round((target/avg-1)*100,2) if avg>0 and target>0 else None
+    out["종합검증"]="외국인·기관·뉴스·공시·지수 종합 검증 미완료"
+    if qty<=0 or avg<=0 or not 0<stop<target:
+        out["근거"]="보유종목 차트 기준을 분석하세요. 시세 감시는 계속합니다.";return out
     if px<=stop:out.update(의견="손절 조건 충족",근거="등록한 손절가 이하 · 실제 주문 체결 확인 필요")
-    elif px>=target:out.update(의견="일부 익절 검토",근거="등록한 목표가 도달 · 실제 주문 체결 확인 필요")
+    elif px>=target:
+        out.update(의견="일부 익절 검토" if px>avg else "손실 축소 검토",
+                   근거="차트 목표 구간 도달 · 평단을 넘지 않으면 익절이 아닙니다")
     else:out.update(의견="보유 관찰",근거="등록한 가격 조건 사이 · 수급·뉴스 종합판단은 미검증")
+    if out["의견"]=="보유 관찰" and timestamp_fresh(quote.get("program_received_utc"),120) and timestamp_fresh(quote.get("book_received_utc"),30):
+        if _safe_num(quote.get("프로그램"))<0 and _safe_num(quote.get("호가불균형"))<0:
+            out.update(의견="수급 약화 점검",근거="프로그램 순매도·호가 불균형 음수 동시 확인 · 단독 매도 확정 근거 아님")
     return out
 
 def entry_gate_reason(row):
@@ -1090,9 +1119,14 @@ div[data-testid="stDataFrame"] {border-radius: 12px; overflow: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
+def market_date(zone="Asia/Seoul",now=None):
+    stamp=pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if stamp.tzinfo is None:raise ValueError("시각에는 시간대가 필요합니다")
+    return stamp.tz_convert(zone).date()
+
 def business_day(d=None):
-    d = d or dt.date.today()
-    while d.weekday() >= 5:
+    d = d or market_date()
+    while d.weekday() >= 5 or d.isoformat() in _KRX_HOLIDAYS:
         d -= dt.timedelta(days=1)
     return d
 
@@ -1867,7 +1901,7 @@ def kis_us_quote(symbol,exchange):
     except Exception:return None
 
 def run_us_scan(symbols,min_score):
-    out=[];end=dt.date.today();start=end-dt.timedelta(days=240)
+    out=[];end=market_date("America/New_York");start=end-dt.timedelta(days=240)
     for symbol in symbols:
         bars=prices(symbol,start.isoformat(),end.isoformat())
         if len(bars)<65:continue
@@ -1975,7 +2009,7 @@ def kis_index_snapshot():
 def delayed_macro_snapshot():
     registry={"KOSPI":"KS11","KOSDAQ":"KQ11","KOSPI200":"KS200","NASDAQ":"IXIC","S&P500":"S&P500",
               "SOX":"YAHOO:^SOX","달러/원":"USD/KRW","브렌트유 선물":"BZ=F","미국10년금리":"US10YT"}
-    rows=[];end=dt.date.today();start=end-dt.timedelta(days=30)
+    rows=[];end=market_date();start=end-dt.timedelta(days=30)
     for label,symbol in registry.items():
         try:
             data=fdr.DataReader(symbol,start.isoformat(),end.isoformat())
@@ -2054,11 +2088,12 @@ const zones=[['kr','Asia/Seoul'],['us','America/Los_Angeles']];
 const formats=zones.map(([id,timeZone])=>({id,
  time:new Intl.DateTimeFormat('en-GB',{timeZone,hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}),
  date:new Intl.DateTimeFormat('ko-KR',{timeZone,year:'numeric',month:'2-digit',day:'2-digit',weekday:'short'})}));
-function tick(){const now=new Date();for(const f of formats){document.getElementById(f.id+'-time').textContent=f.time.format(now);document.getElementById(f.id+'-date').textContent=f.date.format(now);}}
+const serverUtcMs=__SERVER_UTC_MS__;const startedAt=performance.now();
+function tick(){const now=new Date(serverUtcMs+performance.now()-startedAt);for(const f of formats){document.getElementById(f.id+'-time').textContent=f.time.format(now);document.getElementById(f.id+'-date').textContent=f.date.format(now);}}
 tick();setInterval(tick,1000);document.addEventListener('visibilitychange',tick);
 </script></body></html>
-""",height=100,scrolling=False)
-st.caption("시계는 기기 시간을 기준으로 매초 갱신 · 미국 서부 서머타임 자동 적용 · 시세 수신시각과 별도")
+""".replace("__SERVER_UTC_MS__",str(int(pd.Timestamp.now(tz="UTC").timestamp()*1000))),height=100,scrolling=False)
+st.caption("시계는 앱 서버 UTC 기준으로 매초 갱신 · 미국 서부 서머타임 자동 적용 · 시세 수신시각과 별도")
 st.caption("🟡 KIS 인증정보 설정됨 · 연결 검증 필요" if kis_configured() else "🟡 일봉 모드 — KIS 키 연결 시 장중 현재가 활성화")
 
 if fdr is None:
@@ -2134,7 +2169,7 @@ with st.expander("🇺🇸 미국 단타·스윙·장기 후보",expanded=False)
     if not st.session_state.us_scan.empty:
         symbol=st.selectbox("미국 차트 종목",st.session_state.us_scan["코드"].astype(str).tolist(),key="us_chart_symbol")
         if st.button("미국 캔들 차트 보기",key="show_us_candle"):
-            chart_end=dt.date.today()
+            chart_end=market_date("America/New_York")
             history=prices(symbol,(chart_end-dt.timedelta(days=180)).isoformat(),chart_end.isoformat())
             if history is not None and not history.empty:
                 st.plotly_chart(candle_chart(decorate_chart(history),title=symbol+" 일봉 · USD",currency="USD"),use_container_width=True)
@@ -2318,7 +2353,7 @@ else:
     st.info("위의 **지금 스캔** 버튼을 누르면 후보 종목이 표시됩니다.")
 
 with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("holdings",pd.DataFrame()).empty):
-    st.caption("국내 종목 최대 5개 · 금액은 원 · 가격 조건 안내이며 자동 주문하지 않습니다. 평가손익은 비용 차감 전입니다.")
+    st.caption("코드·수량·평단을 입력하세요. 손절·목표가는 차트 분석으로 자동 계산합니다. 최대 5종목 · 원 · 자동 주문 없음 · 비용 차감 전 손익")
     initial=st.session_state.setdefault("holdings",pd.DataFrame(columns=["코드","종목","수량","평단","손절가","익절가"]))
     if "holdings_names" not in st.session_state:
         stock_list=listing()
@@ -2327,7 +2362,7 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
     st.session_state.setdefault("holdings_draft",initial.copy())
     editor_key="holdings_editor_"+str(st.session_state.get("holdings_editor_revision",0))
     edited=st.data_editor(st.session_state.holdings_draft,num_rows="dynamic",hide_index=True,use_container_width=True,
-                         key=editor_key,on_change=holdings_editor_changed,args=(editor_key,),
+                         key=editor_key,on_change=holdings_editor_changed,args=(editor_key,),disabled=["손절가","익절가"],
                          column_config={"코드":st.column_config.TextColumn("코드 (6자리)")})
     st.caption("6자리 코드를 입력하고 Enter를 누르면 종목명이 자동 입력됩니다. 조회되지 않으면 직접 입력하세요.")
     save=st.button("보유종목 저장")
@@ -2340,6 +2375,22 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
                 live_tape().start(list(dict.fromkeys(held+candidates))[:10],secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
             st.success("현재 세션에 저장했습니다. 재부팅 전 CSV를 내려받으세요.")
         except ValueError as exc:st.error(str(exc))
+    refresh_plans=st.button("보유종목 차트 기준 분석 / 갱신",use_container_width=True)
+    if (save or refresh_plans) and not st.session_state.holdings.empty:
+        plans={}
+        with st.spinner("보유종목 일봉·지지·저항·변동성 분석 중"):
+            end=business_day()
+            for _,position in st.session_state.holdings.iterrows():
+                code=str(position["코드"])
+                try:
+                    history=prices(code,end-dt.timedelta(days=180),end)
+                    row=analyze(code,str(position["종목"]),history)
+                    plan=holding_chart_plan(row) if row else {}
+                    if plan:plans[code]=plan
+                    else:st.warning(str(position["종목"])+" · 차트 근거 부족: 자동 기준 대기")
+                except Exception:st.warning(str(position["종목"])+" · 차트 조회 실패: 시세 감시 가능, 자동 기준 대기")
+        st.session_state.holdings_plans=plans
+    st.caption("차트 기준은 저장/갱신 시 고정합니다. 평단 회복을 가정하지 않으며 목표가가 평단보다 낮으면 손실 축소 구간으로 표시합니다.")
     start_holdings,stop_holdings=st.columns([3,1])
     if start_holdings.button("보유종목 실시간 감시 시작",key="holding_monitor_start",use_container_width=True):
         if st.session_state.holdings.empty:st.warning("보유종목을 먼저 저장하세요.")
@@ -2358,6 +2409,9 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
         try:
             restored_df=pd.read_csv(restored,dtype={"코드":str})
             st.session_state.holdings=validate_holdings(restored_df)
+            st.session_state.holdings_draft=st.session_state.holdings.copy()
+            st.session_state.holdings_plans={}
+            st.session_state.holdings_editor_revision=st.session_state.get("holdings_editor_revision",0)+1
             st.rerun()
         except Exception:st.error("CSV 형식 확인 필요")
     @st.fragment(run_every="2s")
@@ -2367,13 +2421,17 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
         rows=[]
         for _,position in positions.iterrows():
             quote=tape_rows.get(str(position["코드"]).zfill(6),{}) if connected else {}
-            rows.append(holding_review(position.to_dict(),quote))
+            plan=st.session_state.get("holdings_plans",{}).get(str(position["코드"]),{})
+            if plan and not holding_chart_plan({"종가":1,"ATR":.1,"기술기준일":plan.get("기술기준일")}):plan={}
+            pos=position.to_dict()
+            if not plan:pos.update(손절가=0,익절가=0)
+            rows.append(holding_review(pos,quote,plan))
         if rows:
             for reviewed in rows:
                 message=str(reviewed["종목"])+" · "+reviewed["의견"]+" · "+reviewed["근거"]
                 if reviewed["의견"]=="손절 조건 충족":st.error(message)
                 elif reviewed["의견"]=="일부 익절 검토":st.success(message)
-                elif reviewed["의견"]=="판단 보류":st.warning(message)
+                elif reviewed["의견"] in ["판단 보류","손실 축소 검토","수급 약화 점검"]:st.warning(message)
             show_candidate_table(pd.DataFrame(rows),"KRW")
             st.caption("화면 평가 2초 주기 · 30초 이내 실제 체결만 현재가·손익에 반영 · 주문은 직접 확인해야 합니다.")
         st.caption("구독된 보유종목별 실제 체결을 반영합니다. 최대 10종목 동시 감시 · 영구 저장·수급/뉴스 종합 권유 검증은 아직 남아 있습니다.")
@@ -2444,7 +2502,7 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
             for code in history["code"].dropna().unique()[:50]:
                 signals=history[history["code"]==code]
                 begin=pd.to_datetime(signals["scan_time_utc"],utc=True).min().date()
-                histories[str(code).zfill(6)]=prices(str(code).zfill(6),begin.isoformat(),dt.date.today().isoformat())
+                histories[str(code).zfill(6)]=prices(str(code).zfill(6),begin.isoformat(),market_date().isoformat())
             evaluated=evaluate_snapshots(history,histories)
             evaluated["signal_day"]=pd.to_datetime(evaluated["scan_time_utc"],utc=True).dt.tz_convert("Asia/Seoul").dt.date.astype(str)
             evaluated=evaluated.drop_duplicates(["code","signal_day"],keep="first")
