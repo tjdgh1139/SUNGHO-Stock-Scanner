@@ -988,13 +988,18 @@ def refresh_news_candidates(frame,top_n=10,ttl=300):
         st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="NOT_CONFIGURED: 네이버 뉴스 키 미설정"
         return
     cache=st.session_state.setdefault("automatic_news",{})
+    provider=(secret_value("NAVER_API_PROVIDER") or "LEGACY").strip().upper()
+    if st.session_state.get("automatic_news_provider")!=provider:
+        cache.clear()
+        st.session_state.automatic_news_provider=provider
     for _,row in frame.head(top_n).iterrows():
         code=str(row.get("코드",""));name=str(row.get("종목",""))
         if not name:continue
         hit=cache.get(code,{})
         if time.time()-hit.get("time",0)<ttl:continue
         try:
-            items=naver_news(name,code,client_id,client_secret)
+            items=naver_news(name,code,client_id,client_secret,
+                             provider=provider)
             cache[code]={"time":time.time(),"items":items}
             st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="PASS_RESPONSE"
         except Exception as exc:
@@ -2515,7 +2520,7 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
         st.write(st.session_state.feed_check_result)
         if st.session_state.feed_check_result.get("DART_MAPPING") in ["ConnectTimeout","ReadTimeout","ConnectionError"]:
             st.warning("DART 네트워크 연결 실패 · 2회 시도 후 중단. 키 유효성은 아직 확인되지 않았습니다. 서버 연결 확인 또는 공식 종목매핑 CSV가 필요합니다.")
-    st.caption("뉴스 자동 수집: NAVER_CLIENT_ID·NAVER_CLIENT_SECRET이 설정되면 실행. CSV 피드도 계속 지원합니다.")
+    st.caption('뉴스 자동 수집: NAVER_CLIENT_ID·NAVER_CLIENT_SECRET 설정. 새 네이버 클라우드 키는 NAVER_API_PROVIDER="HUB"도 설정하세요. 기존 키는 LEGACY 방식 유지. CSV 피드도 지원합니다.')
     evidence=st.file_uploader("외부 배포 검증 증거 JSON",type=["json"],key="deploy_evidence")
     if evidence is not None and st.button("배포 검증 증거 적용",use_container_width=True):
         try:

@@ -29,17 +29,28 @@ def dart_corporations(api_key, get=requests.get):
 def clean_text(text):
     return html.unescape(re.sub(r'<[^>]+>','',str(text or '')))
 
-def naver_news(name,code,client_id,client_secret,get=requests.get):
+def naver_news(name,code,client_id,client_secret,get=requests.get,provider='LEGACY'):
     if not client_id or not client_secret: raise FeedError('NEWS_NOT_CONFIGURED')
-    response=get('https://openapi.naver.com/v1/search/news.json',
+    provider=str(provider).strip().upper()
+    if provider=='HUB':
+        endpoint='https://naverapihub.apigw.ntruss.com/search/v1/news'
+        headers={'X-NCP-APIGW-API-KEY-ID':client_id,'X-NCP-APIGW-API-KEY':client_secret}
+    elif provider=='LEGACY':
+        endpoint='https://openapi.naver.com/v1/search/news.json'
+        headers={'X-Naver-Client-Id':client_id,'X-Naver-Client-Secret':client_secret}
+    else:
+        raise FeedError('NEWS_INVALID_PROVIDER')
+    response=get(endpoint,
                  params={'query':name,'display':20,'sort':'date'},
-                 headers={'X-Naver-Client-Id':client_id,'X-Naver-Client-Secret':client_secret},timeout=10)
+                 headers=headers,timeout=10)
     response.raise_for_status()
     payload=response.json()
-    if 'items' not in payload: raise FeedError('NEWS_INVALID_RESPONSE')
+    if not isinstance(payload,dict) or not isinstance(payload.get('items'),list):
+        raise FeedError('NEWS_INVALID_RESPONSE')
     result=[]
     now=datetime.now(timezone.utc)
     for item in payload['items']:
+        if not isinstance(item,dict): continue
         try: stamp=parsedate_to_datetime(item.get('pubDate','')).astimezone(timezone.utc)
         except (ValueError,TypeError): continue
         if not 0<=(now-stamp).total_seconds()<=86400: continue
