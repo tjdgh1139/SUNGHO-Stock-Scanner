@@ -984,11 +984,17 @@ def ensure_dart_map():
 def refresh_news_candidates(frame,top_n=10,ttl=300):
     global _NEWS_CACHE
     client_id=secret_value("NAVER_CLIENT_ID");client_secret=secret_value("NAVER_CLIENT_SECRET")
+    cache=st.session_state.setdefault("automatic_news",{})
+    provider=(secret_value("NAVER_API_PROVIDER") or "LEGACY").strip().upper()
+    identity=hashlib.sha256(json.dumps([provider,client_id,client_secret]).encode()).hexdigest()
+    if st.session_state.get("automatic_news_identity")!=identity:
+        cache.clear()
+        _NEWS_CACHE=[x for x in _NEWS_CACHE if x.get("source")!="NAVER Search"]
+        st.session_state.news_cache=_NEWS_CACHE
+        st.session_state.automatic_news_identity=identity
     if not client_id or not client_secret:
         st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="NOT_CONFIGURED: 네이버 뉴스 키 미설정"
         return
-    cache=st.session_state.setdefault("automatic_news",{})
-    provider=(secret_value("NAVER_API_PROVIDER") or "LEGACY").strip().upper()
     if st.session_state.get("automatic_news_provider")!=provider:
         cache.clear()
         st.session_state.automatic_news_provider=provider
