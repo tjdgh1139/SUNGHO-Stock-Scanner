@@ -2089,17 +2089,23 @@ def normalize_us_movers(records,exchange,min_turnover=1_000_000,max_spread_pct=1
     for item in records:
         symbol=str(item.get("symb","")).strip().upper()
         if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}",symbol):continue
+        name=str(item.get("knam") or item.get("name") or item.get("enam") or symbol)
+        if any(word in name for word in ("워런트","인수권","유닛")) or re.search(r"\b(WARRANTS?|RIGHTS?|UNITS?)\b",name.upper()):continue
         price=_safe_num(item.get("last"));volume=_safe_num(item.get("tvol"))
-        bid=_safe_num(item.get("pbid"));ask=_safe_num(item.get("pask"));turnover=_safe_num(item.get("tamt"))
+        bid=_safe_num(item.get("pbid"));ask=_safe_num(item.get("pask"))
+        raw_turnover=item.get("tamt")
+        turnover=_safe_num(raw_turnover)
+        turnover_known=raw_turnover not in (None,"") and turnover>0
         if price<=0:continue
         valid_book=0<bid<=ask
         spread=(ask-bid)/((ask+bid)/2)*100 if valid_book else float("nan")
-        eligible=valid_book and spread<=max_spread_pct and turnover>=min_turnover
+        eligible=turnover_known and valid_book and spread<=max_spread_pct and turnover>=min_turnover
         rows.append({"코드":symbol,"종목":item.get("knam") or item.get("name") or symbol,
           "거래소":exchange,"현재가":price,"당일등락%":_safe_num(item.get("rate")),
-          "최근5분등락%":_safe_num(item.get("n_rate")),"거래량":volume,"거래대금USD":turnover,
+          "최근5분등락%":_safe_num(item.get("n_rate")),"거래량":volume,"거래대금USD":turnover if turnover_known else float("nan"),
+          "거래대금상태":"수신" if turnover_known else "미확인 · 응답 누락/0",
           "스프레드%":spread,"기초유동성통과":bool(eligible),
-          "후보상태":"추가검증 후보" if eligible else "관찰 · 거래대금/호가 미충족",
+          "후보상태":"추가검증 후보" if eligible else ("관찰 · 거래대금 미확인" if not turnover_known else "관찰 · 거래대금/호가 미충족"),
           "검증상태":"시세시각·뉴스·거래정지·기업행동 미검증"})
     return pd.DataFrame(rows)
 
