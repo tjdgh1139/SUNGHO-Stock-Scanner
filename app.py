@@ -989,6 +989,30 @@ def ensure_dart_map():
         st.session_state.setdefault("feed_diagnostics",{})["DART_MAPPING"]=str(exc) if isinstance(exc,FeedError) else type(exc).__name__
         return False
 
+def select_news_batch(frame,holdings,pool,cursor=0,budget=10):
+    """Reserve half the request budget for rotation to avoid top-list starvation."""
+    budget=max(1,int(budget));rows={};priority=[]
+    for source in (holdings,frame,pool):
+        for row in source.to_dict('records') if isinstance(source,pd.DataFrame) else []:
+            code=str(row.get('코드','')).strip();name=str(row.get('종목','')).strip()
+            if code and name and name!='nan':rows.setdefault(code,row)
+    def add(code):
+        if code in rows and code not in priority:priority.append(code)
+    if isinstance(holdings,pd.DataFrame):
+        for code in holdings.get('코드',[]):add(str(code).strip())
+    for row in frame.to_dict('records'):
+        if abs(_safe_num(row.get('등락%',row.get('등락률',0))))>=3 or _safe_num(row.get('거래량x',0))>=2:
+            add(str(row.get('코드','')).strip())
+    for code in frame.get('코드',[]):add(str(code).strip())
+    chosen=priority[:max(1,budget//2)]
+    rotating=list(rows)
+    next_cursor=int(cursor)%max(1,len(rotating))
+    for _ in range(len(rotating)):
+        if len(chosen)>=budget:break
+        code=rotating[next_cursor];next_cursor=(next_cursor+1)%len(rotating)
+        if code not in chosen:chosen.append(code)
+    return [rows[code] for code in chosen],next_cursor,len(rows)
+
 def refresh_news_candidates(frame,top_n=10,ttl=300):
     global _NEWS_CACHE
     client_id=secret_value("NAVER_CLIENT_ID");client_secret=secret_value("NAVER_CLIENT_SECRET")
@@ -1004,16 +1028,22 @@ def refresh_news_candidates(frame,top_n=10,ttl=300):
     if st.session_state.get("automatic_news_provider")!=provider:
         cache.clear()
         st.session_state.automatic_news_provider=provider
-    for _,row in frame.head(top_n).iterrows():
+    selected,cursor,population=select_news_batch(frame,st.session_state.get('holdings',pd.DataFrame()),
+        st.session_state.get('watch_candidates',frame),st.session_state.get('news_rotation_cursor',0),top_n)
+    st.session_state.news_rotation_cursor=cursor
+    st.session_state.news_monitor_population=population
+    for row in selected:
         code=str(row.get("코드",""));name=str(row.get("종목",""))
         if not name:continue
         hit=cache.get(code,{})
-        if time.time()-hit.get("time",0)<ttl:continue
+        refresh_ttl=min(ttl,60) if code in set(st.session_state.get('holdings',pd.DataFrame()).get('코드',[])) else ttl
+        if time.time()-hit.get("time",0)<refresh_ttl:continue
         try:
             items=public_news(name,code) if provider=="PUBLIC_RSS" else naver_news(name,code,client_id,client_secret,provider=provider)
             cache[code]={"time":time.time(),"items":items}
             st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="PASS_RESPONSE" if items else "PASS_EMPTY: 최신 종목 일치 기사 없음"
         except Exception as exc:
+            cache[code]={"time":time.time(),"items":[],"error":type(exc).__name__}
             st.session_state.setdefault("feed_diagnostics",{})["NEWS"]=type(exc).__name__
     manual=[x for x in _NEWS_CACHE if x.get("source") not in ("NAVER Search","Bing News RSS")]
     _NEWS_CACHE=manual+[x for hit in cache.values() for x in hit.get("items",[])]
@@ -1047,7 +1077,7 @@ def attach_all_evidence(frame):
     if ensure_dart_map():out=attach_disclosure_evidence(out,top_n=10)
     else:out["공시조회상태"]="NOT_CONFIGURED" if not secret_value("DART_API_KEY") else "NO_MAPPING"
     refresh_news_candidates(out)
-    if news_feed_status().get("ready"):out=attach_news_evidence(out,top_n=10)
+    if news_feed_status().get("ready"):out=attach_news_evidence(out,top_n=len(out))
     out["분석무결성"]=[integrity_status(r.to_dict()) for _,r in out.iterrows()]
     for idx,row in out.iterrows():
         d=row.to_dict();health=row_live_health(d)
@@ -2525,6 +2555,7 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
     st.caption("감시 모집단: "+str(len(st.session_state.get("watch_candidates",st.session_state.scan)))+"개 · 이전 후보 밖 종목도 순환 갱신")
     st.caption("공시/뉴스 연결상태: "+str(disclosure_feed_status())+" · DART매핑: "+str(dart_corp_map_status()))
     st.caption("뉴스피드 상태: "+str(news_feed_status())+" · KRX휴장캘린더: "+str(krx_holiday_status()))
+    st.caption("뉴스 순환 대상: "+str(st.session_state.get("news_monitor_population",0))+"개 · 보유/급변/상위 후보 우선 + 나머지 순환 · 조회 시간은 종목별로 다릅니다.")
     holidayfile=st.file_uploader("KRX 휴장일 CSV (date)",type=["csv"],key="krx_holidays_upload")
     if holidayfile is not None and st.button("KRX 휴장일 적용",use_container_width=True):
         if load_krx_holidays_csv(holidayfile.getvalue()): st.success("KRX 휴장일 캘린더 적용 완료")
