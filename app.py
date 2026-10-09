@@ -123,6 +123,7 @@ def candidate_cards(frame):
         name=html.escape(str(row.get("종목","-")))
         code=html.escape(str(row.get("코드","-")))
         status=html.escape(str(row.get("상태","판단보류")))
+        if kr_market_session_safe()=="CLOSED":status="다음 장 관찰 · 현재 매수 신호 아님"
         confidence=html.escape(str(row.get("데이터신뢰도","일봉/지연")))
         reason=html.escape(str(row.get("진입제한사유","")))
         price=_safe_num(row.get("현재가",row.get("종가",0)))
@@ -938,7 +939,7 @@ def is_krx_holiday(now_kst=None):
     now=now_kst or pd.Timestamp.now(tz="Asia/Seoul")
     if not isinstance(now,pd.Timestamp):now=pd.Timestamp(now)
     now=now.tz_localize("Asia/Seoul") if now.tzinfo is None else now.tz_convert("Asia/Seoul")
-    return now.strftime("%Y-%m-%d") in _KRX_HOLIDAYS
+    return now.strftime("%Y-%m-%d") in (_KRX_HOLIDAYS|{"2026-10-09"})
 def kr_market_session_safe(now_kst=None):
     now=now_kst or pd.Timestamp.now(tz="Asia/Seoul")
     if not isinstance(now,pd.Timestamp):now=pd.Timestamp(now)
@@ -1032,19 +1033,31 @@ def refresh_news_candidates(frame,top_n=10,ttl=300):
         st.session_state.get('watch_candidates',frame),st.session_state.get('news_rotation_cursor',0),top_n)
     st.session_state.news_rotation_cursor=cursor
     st.session_state.news_monitor_population=population
+    pending=[]
     for row in selected:
         code=str(row.get("코드",""));name=str(row.get("종목",""))
         if not name:continue
         hit=cache.get(code,{})
         refresh_ttl=min(ttl,60) if code in set(st.session_state.get('holdings',pd.DataFrame()).get('코드',[])) else ttl
         if time.time()-hit.get("time",0)<refresh_ttl:continue
-        try:
-            items=public_news(name,code) if provider=="PUBLIC_RSS" else naver_news(name,code,client_id,client_secret,provider=provider)
-            cache[code]={"time":time.time(),"items":items}
-            st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="PASS_RESPONSE" if items else "PASS_EMPTY: 최신 종목 일치 기사 없음"
-        except Exception as exc:
-            cache[code]={"time":time.time(),"items":[],"error":type(exc).__name__}
-            st.session_state.setdefault("feed_diagnostics",{})["NEWS"]=type(exc).__name__
+        pending.append((code,name))
+    def fetch_one(code,name):
+        return public_news(name,code) if provider=="PUBLIC_RSS" else naver_news(name,code,client_id,client_secret,provider=provider)
+    started=time.monotonic()
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures={executor.submit(fetch_one,code,name):code for code,name in pending}
+        errors=[];count=0
+        for future in as_completed(futures):
+            code=futures[future]
+            try:
+                items=future.result();count+=len(items)
+                cache[code]={"time":time.time(),"items":items}
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+                cache[code]={"time":time.time(),"items":[],"error":type(exc).__name__}
+    if pending:
+        st.session_state.setdefault("feed_diagnostics",{})["NEWS"]=("PARTIAL_ERROR: "+", ".join(sorted(set(errors))) if errors else "PASS_RESPONSE" if count else "PASS_EMPTY: 최신 종목 일치 기사 없음")
+        st.session_state.news_refresh_seconds=round(time.monotonic()-started,2)
     manual=[x for x in _NEWS_CACHE if x.get("source") not in ("NAVER Search","Bing News RSS")]
     _NEWS_CACHE=manual+[x for hit in cache.values() for x in hit.get("items",[])]
     st.session_state.news_cache=_NEWS_CACHE
@@ -2341,7 +2354,8 @@ if not df.empty:
                 st.line_chart(chart[["MACD","MACD_SIGNAL","MACD_OSC"]])
                 st.caption("당일 최근 최대 30개 분봉 · 20분 이동평균선은 일봉의 20일선과 다릅니다.")
             else:st.warning("분봉 실데이터를 받지 못했습니다.")
-    st.subheader("⚡ KIS LIVE")
+    st.subheader("⚡ KIS 시세 조회")
+    st.caption("REST 조회 결과 · 실시간 체결 여부는 아래 WebSocket 수신 상태로 확인하세요. 휴장 중에는 이전 거래일 값일 수 있습니다.")
     q=kis_quote(t)
     ob=kis_orderbook(t)
     if q:
@@ -2406,7 +2420,8 @@ if not df.empty:
 
     a,b=st.columns(2)
     a.metric("종가",f"{int(row['종가']):,}원",f"{row['등락%']}%")
-    b.metric("점수",f"{row['점수']}/100",row["셋업"])
+    b.metric("기술점수",f"{row['점수']}/100",row["셋업"])
+    st.caption("기술점수는 차트 기준입니다. TOP5 단타점수는 수급·데이터 신뢰도·뉴스 등을 보정한 별도 점수이며 수익 확률이 아닙니다.")
     st.subheader("🎯 매매 시나리오")
     c,d=st.columns(2)
     c.metric("매수 구간",f"{int(row['매수하단']):,}~{int(row['매수상단']):,}원")
