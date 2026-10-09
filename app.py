@@ -16,7 +16,7 @@ import uuid
 import html
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from feeds import dart_corporations, naver_news, FeedError
+from feeds import dart_corporations, naver_news, public_news, FeedError
 from ws_protocol import parse_market_packet
 from scoring import overlay_quote, decorate_chart
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -655,7 +655,7 @@ def disclosure_feed_status():
     except Exception:
         dart_key=False
     return {"DART":"READY" if dart_key else "NOT_CONFIGURED",
-            "NEWS":"ADAPTER_REQUIRED"}
+            "NEWS":"PUBLIC_RSS_AVAILABLE"}
 
 def dart_recent_disclosures(corp_code, days=2, max_count=20):
     """Official OpenDART adapter. Requires user's DART_API_KEY in Streamlit Secrets."""
@@ -986,15 +986,13 @@ def refresh_news_candidates(frame,top_n=10,ttl=300):
     client_id=secret_value("NAVER_CLIENT_ID");client_secret=secret_value("NAVER_CLIENT_SECRET")
     cache=st.session_state.setdefault("automatic_news",{})
     provider=(secret_value("NAVER_API_PROVIDER") or "LEGACY").strip().upper()
+    if not client_id or not client_secret:provider="PUBLIC_RSS"
     identity=hashlib.sha256(json.dumps([provider,client_id,client_secret]).encode()).hexdigest()
     if st.session_state.get("automatic_news_identity")!=identity:
         cache.clear()
-        _NEWS_CACHE=[x for x in _NEWS_CACHE if x.get("source")!="NAVER Search"]
+        _NEWS_CACHE=[x for x in _NEWS_CACHE if x.get("source") not in ("NAVER Search","Bing News RSS")]
         st.session_state.news_cache=_NEWS_CACHE
         st.session_state.automatic_news_identity=identity
-    if not client_id or not client_secret:
-        st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="NOT_CONFIGURED: 네이버 뉴스 키 미설정"
-        return
     if st.session_state.get("automatic_news_provider")!=provider:
         cache.clear()
         st.session_state.automatic_news_provider=provider
@@ -1004,13 +1002,12 @@ def refresh_news_candidates(frame,top_n=10,ttl=300):
         hit=cache.get(code,{})
         if time.time()-hit.get("time",0)<ttl:continue
         try:
-            items=naver_news(name,code,client_id,client_secret,
-                             provider=provider)
+            items=public_news(name,code) if provider=="PUBLIC_RSS" else naver_news(name,code,client_id,client_secret,provider=provider)
             cache[code]={"time":time.time(),"items":items}
-            st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="PASS_RESPONSE"
+            st.session_state.setdefault("feed_diagnostics",{})["NEWS"]="PASS_RESPONSE" if items else "PASS_EMPTY: 최신 종목 일치 기사 없음"
         except Exception as exc:
             st.session_state.setdefault("feed_diagnostics",{})["NEWS"]=type(exc).__name__
-    manual=[x for x in _NEWS_CACHE if x.get("source")!="NAVER Search"]
+    manual=[x for x in _NEWS_CACHE if x.get("source") not in ("NAVER Search","Bing News RSS")]
     _NEWS_CACHE=manual+[x for hit in cache.values() for x in hit.get("items",[])]
     st.session_state.news_cache=_NEWS_CACHE
 
@@ -2537,7 +2534,7 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
         st.write(st.session_state.feed_check_result)
         if st.session_state.feed_check_result.get("DART_MAPPING") in ["ConnectTimeout","ReadTimeout","ConnectionError"]:
             st.warning("DART 네트워크 연결 실패 · 2회 시도 후 중단. 키 유효성은 아직 확인되지 않았습니다. 서버 연결 확인 또는 공식 종목매핑 CSV가 필요합니다.")
-    st.caption('뉴스 자동 수집: NAVER_CLIENT_ID·NAVER_CLIENT_SECRET 설정. 새 네이버 클라우드 키는 NAVER_API_PROVIDER="HUB"도 설정하세요. 기존 키는 LEGACY 방식 유지. CSV 피드도 지원합니다.')
+    st.caption('뉴스 자동 수집: 네이버 키가 없으면 공개 Bing News RSS 제목을 조회합니다. 최근 24시간·종목명 일치 기사만 반영하며 기사 본문은 분석하지 않습니다. 네이버 API와 CSV도 지원합니다.')
     evidence=st.file_uploader("외부 배포 검증 증거 JSON",type=["json"],key="deploy_evidence")
     if evidence is not None and st.button("배포 검증 증거 적용",use_container_width=True):
         try:

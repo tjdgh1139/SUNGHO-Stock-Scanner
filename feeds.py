@@ -6,6 +6,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit, parse_qs
 import requests
 
 class FeedError(RuntimeError):
@@ -37,6 +38,37 @@ def dart_corporations(api_key, get=requests.get):
 
 def clean_text(text):
     return html.unescape(re.sub(r'<[^>]+>','',str(text or '')))
+
+def public_news(name,code,get=requests.get):
+    """Public RSS headlines; no credentials, article bodies or inferred evidence."""
+    if not str(name).strip():raise FeedError('NEWS_NAME_REQUIRED')
+    response=get('https://www.bing.com/news/search',
+        params={'q':'"'+str(name)+'"','format':'rss','setlang':'ko-KR'},timeout=8)
+    response.raise_for_status()
+    if len(response.content)>2*1024*1024:raise FeedError('NEWS_RESPONSE_TOO_LARGE')
+    try:root=ET.fromstring(response.content)
+    except ET.ParseError as exc:raise FeedError('NEWS_INVALID_RESPONSE') from exc
+    if root.tag!='rss' or root.find('channel') is None:raise FeedError('NEWS_INVALID_RESPONSE')
+    now=datetime.now(timezone.utc);result=[];seen=set()
+    normalized=re.sub(r'\s+','',str(name))
+    for item in root.findall('./channel/item')[:50]:
+        title=clean_text(item.findtext('title',''));url=item.findtext('link','').strip()
+        parts=urlsplit(url)
+        if parts.hostname in ('www.bing.com','bing.com') and parts.path=='/news/apiclick.aspx':
+            url=parse_qs(parts.query).get('url',[''])[0]
+        try:
+            stamp=parsedate_to_datetime(item.findtext('pubDate',''))
+            if stamp.tzinfo is None:continue
+            stamp=stamp.astimezone(timezone.utc)
+        except (TypeError,ValueError):continue
+        if not 0<=(now-stamp).total_seconds()<=86400:continue
+        if normalized not in re.sub(r'\s+','',title):continue
+        if not url.startswith('https://') or title in seen:continue
+        seen.add(title)
+        result.append({'title':title,'body':'','stock_code':str(code),'stock_name':str(name),
+            '_ts':stamp.isoformat(),'published_at':stamp.isoformat(),'url':url,
+            'source':'Bing News RSS','publisher':clean_text(item.findtext('source',''))})
+    return result[:20]
 
 def naver_news(name,code,client_id,client_secret,get=requests.get,provider='LEGACY'):
     if not client_id or not client_secret: raise FeedError('NEWS_NOT_CONFIGURED')
