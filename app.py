@@ -16,7 +16,15 @@ import uuid
 import html
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from feeds import dart_corporations, naver_news, public_news, FeedError
+import importlib
+import feeds as _feeds
+# Streamlit reruns may retain the previous module after a two-file deployment.
+if not hasattr(_feeds,"public_news"):
+    _feeds=importlib.reload(_feeds)
+dart_corporations=_feeds.dart_corporations
+naver_news=_feeds.naver_news
+public_news=_feeds.public_news
+FeedError=_feeds.FeedError
 from ws_protocol import parse_market_packet
 from scoring import overlay_quote, decorate_chart
 from concurrent.futures import ThreadPoolExecutor, as_completed
