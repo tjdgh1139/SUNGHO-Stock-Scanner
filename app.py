@@ -64,8 +64,8 @@ def candle_chart(history, title="", minute=False, currency="KRW"):
     if "거래량" in h:
         fig.add_trace(go.Bar(x=x,y=h["거래량"],name="거래량",showlegend=False,
             marker_color=np.where(h["종가"]>=h["시가"],"#e53935","#1976d2")),row=2,col=1)
-    fig.update_layout(title=title,height=590,margin=dict(l=8,r=8,t=50,b=30),
-        legend=dict(orientation="h",y=1.08,x=0),hovermode="x unified",
+    fig.update_layout(title=dict(text=title,x=0.02,xanchor="left"),height=650,margin=dict(l=8,r=8,t=65,b=125),
+        legend=dict(orientation="h",y=-0.18,yanchor="top",x=0,xanchor="left",font=dict(size=11)),hovermode="x unified",
         xaxis_rangeslider_visible=False,dragmode="pan")
     fig.update_xaxes(type="category",nticks=7,rangeslider_visible=False)
     if currency not in ("KRW","USD"):raise ValueError("unsupported currency")
