@@ -526,7 +526,15 @@ def current_entry_view(frame):
     if kr_market_session_safe()=="CLOSED":
         out["상태"]="신규진입금지"
         out["진입제한사유"]="거래시간 외·등록 휴장일 / "+out["진입제한사유"]
+    out["후보분류"]=[entry_candidate_category(r,kr_market_session_safe()) for _,r in out.iterrows()]
     return out
+
+def entry_candidate_category(row,session):
+    if session=="CLOSED":return "다음 장 관찰"
+    if row.get("상태")=="진입확인":return "진입 조건 통과"
+    if row_live_health(row).get("state")!="LIVE":return "실시간 자료 확인 필요"
+    if entry_risk_reason(row):return "가격·위험 조건 미달"
+    return "점수 조건 대기"
 
 def execution_permission(row, health=None, regime="NORMAL"):
     """Decision-support gate; does not place orders."""
@@ -2297,7 +2305,10 @@ if not df.empty:
     st.subheader("현재 진입 조건 통과 후보")
     ready=df[df["상태"]=="진입확인"].head(5)
     if ready.empty:
-        st.info("현재 진입 조건을 통과한 후보 없음 · 아래 제한 사유를 확인하세요.")
+        if kr_market_session_safe()=="CLOSED":
+            st.info("현재 거래시간 외 또는 휴장일입니다. 아래 목록은 다음 장 관찰 후보이며, 장중 실시간 자료로 다시 평가해야 합니다.")
+        else:
+            st.info("현재 진입 조건 통과 후보 없음 · 자료 미확인과 가격·위험 조건 미달을 아래 후보분류에서 구분하세요.")
     else:
         st.markdown(candidate_cards(ready),unsafe_allow_html=True)
         ready_cols=[c for c in ["종목","매수하단","매수상단","손절가","진입검토목표","비용반영손익비"] if c in ready]
@@ -2307,7 +2318,7 @@ if not df.empty:
     st.subheader("TOP 5 · 우선 비교")
     st.markdown(candidate_cards(df),unsafe_allow_html=True)
     st.caption("현재 순위의 후보 · 점수는 수익 확률이 아닙니다. 모바일에서는 카드를 좌우로 넘겨 비교하세요.")
-    comparison_cols=["종목","매수하단","매수상단","손절가","1차목표","비용반영손익비","상태","진입제한사유"]
+    comparison_cols=["종목","후보분류","매수하단","매수상단","손절가","1차목표","비용반영손익비","상태","진입제한사유"]
     comparison_cols=[c for c in comparison_cols if c in df.columns]
     show_candidate_table(df.head(5)[comparison_cols],"KRW")
     with st.expander(f"전체 후보 {len(df)}개 · 점수와 매매 구간 비교",expanded=False):
