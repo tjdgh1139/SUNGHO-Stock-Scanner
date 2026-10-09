@@ -126,6 +126,7 @@ def candidate_cards(frame):
         if kr_market_session_safe()=="CLOSED":status="다음 장 관찰 · 현재 매수 신호 아님"
         confidence=html.escape(str(row.get("데이터신뢰도","일봉/지연")))
         reason=html.escape(str(row.get("진입제한사유","")))
+        category=html.escape(str(row.get("후보분류",entry_candidate_category(row,kr_market_session_safe()))))
         price=_safe_num(row.get("현재가",row.get("종가",0)))
         change=_safe_num(row.get("등락%",0))
         score=_safe_num(row.get("실시간단타점수",row.get("단타점수",row.get("점수",0))))
@@ -134,7 +135,7 @@ def candidate_cards(frame):
                      f'<div class="card-name">{name}</div><div class="card-price">{price:,.0f}<span> 원</span></div>'
                      f'<div class="card-change {tone}">{change:+.2f}%</div>'
                      f'<div class="card-score">단타 점수 <strong>{score:.1f}</strong><span> / 100</span></div>'
-                     f'<div class="card-status">{status}</div><div class="card-source">{confidence}</div><div class="card-reason">{reason}</div></article>')
+                     f'<div class="card-status">후보분류: {category}</div><div class="card-source">{status} · {confidence}</div><div class="card-reason">{reason}</div></article>')
     return '<div class="candidate-grid">'+''.join(cards)+'</div>'
 
 def strategy_scores(row):
@@ -2316,13 +2317,14 @@ if not df.empty:
         st.warning("데이터·가격 조건 통과 후보입니다. 실제 장중 동작과 성적 검증은 아직 진행 중입니다.")
     st.caption(f"자동 재평가 {'켜짐' if auto_live else '꺼짐'} · {refresh_sec}초마다 최대 {refresh_batch}종목 REST 순환 갱신 · WebSocket은 구독된 최대 10종목 · 앱 연결 유지 필요")
     st.subheader("TOP 5 · 우선 비교")
+    st.caption("후보분류 · "+" / ".join(f"{label} {count}개" for label,count in df["후보분류"].value_counts().items()))
     st.markdown(candidate_cards(df),unsafe_allow_html=True)
     st.caption("현재 순위의 후보 · 점수는 수익 확률이 아닙니다. 모바일에서는 카드를 좌우로 넘겨 비교하세요.")
     comparison_cols=["종목","후보분류","매수하단","매수상단","손절가","1차목표","비용반영손익비","상태","진입제한사유"]
     comparison_cols=[c for c in comparison_cols if c in df.columns]
     show_candidate_table(df.head(5)[comparison_cols],"KRW")
     with st.expander(f"전체 후보 {len(df)}개 · 점수와 매매 구간 비교",expanded=False):
-        mobile_cols=["종목","실시간단타점수","스윙점수","장기점수","상태","데이터신뢰도","분석무결성","종가","등락%","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","거래량x","RSI"]
+        mobile_cols=["종목","후보분류","실시간단타점수","스윙점수","장기점수","상태","데이터신뢰도","분석무결성","종가","등락%","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","거래량x","RSI"]
         show_candidate_table(df[[c for c in mobile_cols if c in df.columns]],"KRW")
 
     st.subheader("🔎 상세 분석")
