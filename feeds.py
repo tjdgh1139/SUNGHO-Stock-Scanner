@@ -15,6 +15,15 @@ def dart_corporations(api_key, get=requests.get):
     if not api_key: raise FeedError('DART_NOT_CONFIGURED')
     response=get('https://opendart.fss.or.kr/api/corpCode.xml',params={'crtfc_key':api_key},timeout=20)
     response.raise_for_status()
+    if not response.content.startswith(b'PK'):
+        try:
+            error_root=ET.fromstring(response.content)
+            status=error_root.findtext('status','')
+        except ET.ParseError:
+            status=''
+        if re.fullmatch(r'\d{3}',status):
+            raise FeedError('DART_API_STATUS_'+status)
+        raise FeedError('DART_MAP_INVALID_RESPONSE')
     try:
         with zipfile.ZipFile(BytesIO(response.content)) as archive:
             info=next(i for i in archive.infolist() if i.filename.upper().endswith('CORPCODE.XML'))

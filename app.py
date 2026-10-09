@@ -978,7 +978,7 @@ def ensure_dart_map():
         st.session_state.setdefault("feed_diagnostics",{})["DART_MAPPING"]="PASS" if _DART_CORP_MAP else "EMPTY"
         return bool(_DART_CORP_MAP)
     except Exception as exc:
-        st.session_state.setdefault("feed_diagnostics",{})["DART_MAPPING"]=type(exc).__name__
+        st.session_state.setdefault("feed_diagnostics",{})["DART_MAPPING"]=str(exc) if isinstance(exc,FeedError) else type(exc).__name__
         return False
 
 def refresh_news_candidates(frame,top_n=10,ttl=300):
@@ -2503,9 +2503,20 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
     render_verification_connection()
     if st.button("🔌 KIS 라이브 최종 테스트",use_container_width=True):
         gate_df,sok,lok,lmsg=live_release_gate()
-        st.dataframe(gate_df,hide_index=True,use_container_width=True)
-        if sok and lok: st.success("검증 완료: 모든 필수 증거 확인")
-        else: st.warning(lmsg)
+        st.session_state.live_test_result={"rows":gate_df.to_dict("records"),"passed":bool(sok and lok),"message":lmsg,
+            "time":pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S KST"),
+            "diagnostics":dict(st.session_state.get("feed_diagnostics",{}))}
+    if "live_test_result" in st.session_state:
+        result=st.session_state.live_test_result
+        st.caption("마지막 라이브 검사: "+result["time"])
+        st.dataframe(pd.DataFrame(result["rows"]),hide_index=True,use_container_width=True)
+        if result["passed"]:st.success("검증 완료: 모든 필수 증거 확인")
+        else:st.warning(result["message"])
+        with st.expander("검사 결과 복사·다운로드 (비밀키 제외)"):
+            report=result["time"]+"\n"+"\n".join(str(x["항목"])+": "+str(x["상태"]) for x in result["rows"])
+            report+="\n연결 진단: "+json.dumps(result["diagnostics"],ensure_ascii=False)
+            st.code(report,language=None)
+            st.download_button("검사 결과 TXT 다운로드",report,file_name="scanner_live_test.txt",mime="text/plain")
     st.caption("감시 모집단: "+str(len(st.session_state.get("watch_candidates",st.session_state.scan)))+"개 · 이전 후보 밖 종목도 순환 갱신")
     st.caption("공시/뉴스 연결상태: "+str(disclosure_feed_status())+" · DART매핑: "+str(dart_corp_map_status()))
     st.caption("뉴스피드 상태: "+str(news_feed_status())+" · KRX휴장캘린더: "+str(krx_holiday_status()))
