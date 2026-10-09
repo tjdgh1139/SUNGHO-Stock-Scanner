@@ -1161,20 +1161,27 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.block-container {padding-top: 1.5rem; padding-bottom: 5rem; max-width: 1280px;}
-h1 {font-size: 2rem !important; margin-bottom: .3rem; letter-spacing: -.04em;}
-h2, h3 {font-size: 1.25rem !important; letter-spacing: -.025em;}
-.scanner-hero {display:flex; align-items:center; gap:16px; padding: 16px 20px; border-radius: 20px; background: linear-gradient(115deg,#101c33,#203e5d); color: #f8fafc; margin-bottom: 10px; box-shadow: 0 8px 24px rgba(15,23,42,.12);}
-.scanner-hero .eyebrow {font-size: 12px; font-weight: 700; color: #d4bb82; letter-spacing: .16em; margin-bottom: 4px;}
-.scanner-hero .brand {font-size: 23px; font-weight: 700; letter-spacing: -.04em; line-height: 1.3;}
-.scanner-hero .description {font-size: 15px; color: #d1e0ee; margin-top: 4px; line-height: 1.6;}
+.stApp {font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;}
+.stApp button,.stApp input,.stApp textarea,.stApp select {font-family:inherit;}
+.block-container {padding-top: 4.5rem; padding-bottom: 5rem; max-width: 1400px;}
+h1 {font-size: 2rem !important; margin-bottom: .5rem; letter-spacing: -.03em; line-height:1.4 !important;}
+h2, h3 {font-size: 1.35rem !important; letter-spacing: -.025em; line-height:1.5 !important; padding-top:.5rem !important;}
+[data-testid="stMarkdownContainer"] p {line-height:1.75;}
+.scanner-hero {display:flex; align-items:center; gap:22px; padding: 30px 32px; border:1px solid #35455d; border-radius: 22px; background: linear-gradient(115deg,#101c30,#21344d); color: #f8fafc; margin:8px 0 16px; box-shadow: 0 12px 32px rgba(15,23,42,.14); overflow:visible;}
+.scanner-hero > div {min-width:0;}
+.scanner-hero .eyebrow {font-size: 12px; font-weight: 700; color: #e2c994; letter-spacing: .13em; margin-bottom: 8px;}
+.scanner-hero .brand {font-size: clamp(25px,3vw,36px); font-weight: 750; letter-spacing: -.035em; line-height: 1.4; overflow-wrap:break-word;}
+.scanner-hero .description {font-size: 16px; color: #dce5ef; margin-top: 8px; line-height: 1.75;}
 div[data-testid="stExpander"] {border-radius: 16px; margin-top: 12px; border-color: rgba(128,128,128,.22);}
-div[data-testid="stCaptionContainer"] p {font-size: 14px; line-height: 1.6; opacity: .95;}
+div[data-testid="stCaptionContainer"] p {font-size: 14px; line-height: 1.7; color:var(--text-color); opacity: .85;}
 div[data-testid="stMetric"] {
     border: 1px solid rgba(128,128,128,.25);
     border-radius: 14px;
-    padding: 10px;
+    padding: 16px;
 }
+[data-testid="stMetricLabel"] p {font-size:15px !important;line-height:1.5;}
+[data-testid="stMetricValue"] {font-size:clamp(24px,2.4vw,32px) !important;font-variant-numeric:tabular-nums;}
+[data-testid="stAlert"] {border-radius:14px;line-height:1.7;}
 section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
     font-size: 15px !important;
     color: var(--text-color) !important;
@@ -1184,23 +1191,23 @@ section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
 section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
     font-size: 16px;
 }
-.owl-mark {width:48px; height:48px; flex-shrink:0; color:#d4bb82;}
+.owl-mark {width:64px; height:64px; flex-shrink:0; color:#e2c994;}
 .candidate-grid {display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin:8px 0 18px;}
-.candidate-card {background:#142239; border:1px solid #30415a; border-radius:14px; padding:16px; color:#f1f5f9; min-width:0;}
+.candidate-card {background:linear-gradient(150deg,#192b43,#122036); border:1px solid #3b4e68; border-radius:18px; padding:20px 16px; color:#f1f5f9; min-width:0; box-shadow:0 6px 18px rgba(15,23,42,.08);}
 .card-rank {color:#d4bb82; font-size:12px; font-weight:600; letter-spacing:.05em;}
-.card-name {font-size:17px; font-weight:700; margin:10px 0 8px; overflow-wrap:anywhere;}
-.card-price {font-size:22px; font-weight:700; font-variant-numeric:tabular-nums;}
+.card-name {font-size:18px; font-weight:700; margin:12px 0 10px; line-height:1.5; overflow-wrap:break-word; word-break:keep-all;}
+.card-price {font-size:24px; font-weight:700; line-height:1.5; font-variant-numeric:tabular-nums;}
 .card-price span,.card-score span {font-size:12px; color:#b4c2d4;}
 .card-change {font-size:16px; font-weight:600; margin:2px 0 12px;}
 .card-change.up {color:#ff838b;} .card-change.down {color:#80b3ff;} .card-change.flat {color:#cbd5e1;}
 .card-score {font-size:13px; color:#d5deea; border-top:1px solid #34445d; padding-top:10px;}
 .card-score strong {font-size:20px; color:#f8fafc;}
-.card-status {font-size:13px; margin-top:8px; font-weight:600;}
-.card-reason {font-size:12px;line-height:1.5;color:#d7dfeb;margin-top:8px;overflow-wrap:anywhere;}
-.card-source {font-size:12px; color:#b4c2d4; margin-top:4px;}
+.card-status {font-size:14px;line-height:1.7;margin-top:12px; font-weight:650;color:#f3dfb3;}
+.card-reason {font-size:13px;line-height:1.75;color:#e0e7f1;margin-top:10px;overflow-wrap:break-word;word-break:keep-all;}
+.card-source {font-size:13px;line-height:1.7;color:#c8d4e4;margin-top:6px;}
 @media (max-width:1000px) {
     .candidate-grid {display:flex; overflow-x:auto; scroll-snap-type:x proximity; padding-bottom:8px;}
-    .candidate-card {flex:0 0 190px; scroll-snap-align:start;}
+    .candidate-card {flex:0 0 240px; scroll-snap-align:start;}
 }
 .stButton > button {
     min-height: 48px;
@@ -1213,10 +1220,13 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
 .stButton > button[kind="primary"] {background: #175f96; border-color: #175f96; color: white;}
 div[data-testid="stDataFrame"] {border-radius: 12px; overflow: hidden;}
 @media (max-width: 700px) {
-    .block-container {padding-left: .75rem; padding-right: .75rem; padding-top: .6rem;}
+    .block-container {padding-left: 1rem; padding-right: 1rem; padding-top: 4rem;}
     h1 {font-size: 1.45rem !important;}
-    .scanner-hero {padding: 14px; border-radius: 16px;}
-    .scanner-hero .brand {font-size: 20px;}
+    .scanner-hero {padding: 22px 18px;gap:14px;border-radius:18px;align-items:flex-start;}
+    .scanner-hero .brand {font-size: 25px;}
+    .scanner-hero .description {font-size:14px;}
+    .scanner-hero .eyebrow {font-size:10px;letter-spacing:.08em;}
+    .owl-mark {width:44px;height:44px;margin-top:5px;}
     div[data-testid="column"] {min-width: 0 !important;}
 }
 </style>
@@ -2174,7 +2184,7 @@ def market_sidebar():
 with st.sidebar:
     market_sidebar()
 
-st.markdown('<div class="scanner-hero"><svg class="owl-mark" viewBox="0 0 64 64" fill="none" aria-label="부엉이 심볼" role="img"><path d="M10 8l13 9h18l13-9v27c0 15-10 23-22 23S10 50 10 35V8Z" stroke="currentColor" stroke-width="2.5"/><circle cx="23" cy="30" r="10" stroke="currentColor" stroke-width="2"/><circle cx="41" cy="30" r="10" stroke="currentColor" stroke-width="2"/><circle cx="23" cy="30" r="3" fill="currentColor"/><circle cx="41" cy="30" r="3" fill="currentColor"/><path d="m28 40 4 6 4-6M23 51h18" stroke="currentColor" stroke-width="2"/></svg><div><div class="eyebrow">SUNGHO · STOCK SCANNER</div><div class="brand">시장을 읽고, 근거로 판단하다.</div><div class="description">종목 탐색 · 매매 시나리오 · 보유종목 관리</div></div></div>',unsafe_allow_html=True)
+st.markdown('<div class="scanner-hero"><svg class="owl-mark" viewBox="0 0 64 64" fill="none" aria-label="부엉이 심볼" role="img"><path d="M10 8l13 9h18l13-9v27c0 15-10 23-22 23S10 50 10 35V8Z" stroke="currentColor" stroke-width="2.5"/><circle cx="23" cy="30" r="10" stroke="currentColor" stroke-width="2"/><circle cx="41" cy="30" r="10" stroke="currentColor" stroke-width="2"/><circle cx="23" cy="30" r="3" fill="currentColor"/><circle cx="41" cy="30" r="3" fill="currentColor"/><path d="m28 40 4 6 4-6M23 51h18" stroke="currentColor" stroke-width="2"/></svg><div><div class="eyebrow">SUNGHO · STOCK SCANNER</div><div class="brand">SUNGHO 스캐너</div><div class="description">시장을 읽고, 근거로 판단하다.<br>종목 탐색 · 매매 시나리오 · 보유종목 관리</div></div></div>',unsafe_allow_html=True)
 st.caption("iPhone/PC 한국주식 단타·스윙 후보 스캐너 · RC15 검증 진행 중 · 빌드 "+build_id())
 components.html("""
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><style>
