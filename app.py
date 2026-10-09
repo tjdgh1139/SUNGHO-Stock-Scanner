@@ -1269,7 +1269,7 @@ def market_date(zone="Asia/Seoul",now=None):
 
 def business_day(d=None):
     d = d or market_date()
-    while d.weekday() >= 5 or d.isoformat() in _KRX_HOLIDAYS:
+    while d.weekday() >= 5 or is_krx_holiday(pd.Timestamp(d)):
         d -= dt.timedelta(days=1)
     return d
 
@@ -1915,6 +1915,10 @@ def analyze(t, nm, d):
     return add_trade_levels(result, d)
 
 def run_scan(markets, per_market, min_value, min_score):
+    scan_started=time.monotonic()
+    timings={}
+    stage=st.empty()
+    stage.info("1/5 · 종목 목록을 불러오는 중")
     end=business_day()
     start=end-dt.timedelta(days=180)
     ls=listing()
@@ -1945,6 +1949,9 @@ def run_scan(markets, per_market, min_value, min_score):
     if not universe:
         raise RuntimeError("선택한 시장의 종목 목록이 비어 있습니다.")
 
+    timings["종목 목록"]=round(time.monotonic()-scan_started,1)
+    step_started=time.monotonic()
+    stage.info(f"2/5 · {len(universe)}종목 일봉·기술지표 분석 중")
     st.caption(f"📅 기술데이터 기준: {end:%Y-%m-%d} · 장중 갱신: {'KIS 현재가' if kis_configured() else '미연결(일봉 모드)'}")
     bar=st.progress(0,"빠른 병렬 스캔 중...")
     out=[]
@@ -1972,6 +1979,9 @@ def run_scan(markets, per_market, min_value, min_score):
             if done==1 or done%5==0 or done==len(universe):
                 bar.progress(done/max(1,len(universe)),f"{done}/{len(universe)} 빠른 스캔")
     bar.empty()
+    timings["일봉·기술분석"]=round(time.monotonic()-step_started,1)
+    step_started=time.monotonic()
+    stage.info("3/5 · 상위 후보 KIS 시세 조회 중")
 
     # Optional KIS fresh quote refresh for the strongest candidates only.
     if out and kis_configured():
@@ -1980,17 +1990,24 @@ def run_scan(markets, per_market, min_value, min_score):
             qf={ex.submit(kis_quote,a["코드"]):a for a in prelim}
             for f in as_completed(qf):
                 a=qf[f]
-                q=f.result()
+                try:q=f.result()
+                except Exception:q=None
                 if q:
                     a.update(q)
                     if q["현재가"]>0:
                         a["종가"]=int(q["현재가"])
                         a["등락%"]=round(q["장중등락%"],2)
 
-    if not out: return pd.DataFrame()
+    timings["KIS 시세"]=round(time.monotonic()-step_started,1)
+    if not out:
+        stage.empty()
+        st.session_state.scan_stage_seconds=timings
+        return pd.DataFrame()
 
     # ULTIMATE integration: live-rescore the actual scan output, not just helper functions.
     frame=pd.DataFrame(out)
+    step_started=time.monotonic()
+    stage.info("4/5 · 수급 자료·가격 조건 평가 중")
     if kis_configured():
         for idx in frame.sort_values("점수",ascending=False).head(10).index:
             inv=kis_investor(frame.at[idx,"코드"])
@@ -2021,7 +2038,13 @@ def run_scan(markets, per_market, min_value, min_score):
     frame["1차목표"]=frame["1차익절"]
     frame["2차목표"]=frame["2차익절"]
     # Official evidence reattaches to a newly computed base on every rerank.
+    timings["수급·가격평가"]=round(time.monotonic()-step_started,1)
+    step_started=time.monotonic()
+    stage.info("5/5 · 공시·뉴스 확인과 최종 순위 계산 중")
     frame=attach_all_evidence(frame)
+    timings["공시·뉴스·순위"]=round(time.monotonic()-step_started,1)
+    st.session_state.scan_stage_seconds=timings
+    stage.empty()
     st.session_state.watch_candidates=frame
     return frame[(frame["점수"]>=min_score)&(frame["거래대금"]>=min_value)].copy()
 
@@ -2284,9 +2307,15 @@ if scan_action.button("🚀 지금 스캔",type="primary",use_container_width=Tr
         status = st.empty()
         status.info("🚀 스캔을 시작합니다. 잠시만 기다려주세요...")
         try:
+            started=time.monotonic()
             result = run_scan(markets, per_market, min_value_eok*100_000_000, min_score)
             st.session_state.scan = result
-            if include_us:st.session_state.us_scan=run_us_scan(us_symbols,min_score)
+            if include_us:
+                status.info("한국 후보 분석 완료 · 미국 관심종목 분석 중")
+                us_started=time.monotonic()
+                st.session_state.us_scan=run_us_scan(us_symbols,min_score)
+                st.session_state.setdefault("scan_stage_seconds",{})["미국 관심종목"]=round(time.monotonic()-us_started,1)
+            st.session_state.scan_total_seconds=round(time.monotonic()-started,1)
             if not result.empty:
                 try:
                     save_scan_snapshot(result, scan_type="manual_market_scan")
@@ -2295,10 +2324,14 @@ if scan_action.button("🚀 지금 스캔",type="primary",use_container_width=Tr
             if result.empty:
                 status.warning("⚠️ 스캔은 정상 완료됐지만 현재 조건을 통과한 후보가 없습니다. 최소 점수나 거래대금을 낮춰보세요.")
             else:
-                status.success(f"✅ 스캔 완료: {len(result)}개 후보")
+                status.success(f"✅ 스캔 완료: {len(result)}개 후보 · {st.session_state.scan_total_seconds:,.1f}초")
         except Exception as e:
             status.error(f"❌ 스캔 오류: {type(e).__name__}: {e}")
             st.exception(e)
+
+if st.session_state.get("scan_stage_seconds"):
+    with st.expander("최근 스캔 소요시간 · 느린 단계 확인",expanded=False):
+        st.table(pd.DataFrame([{"단계":name,"소요시간(초)":seconds} for name,seconds in st.session_state.scan_stage_seconds.items()]))
 
 with st.expander("🌎 지수·선물·환율",expanded=False):
     if st.button("시장 지표 갱신",use_container_width=True):st.session_state.macro=macro_snapshot()
