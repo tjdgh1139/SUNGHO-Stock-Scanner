@@ -8,17 +8,20 @@ def evaluate_snapshots(snapshots, histories, cost_bps=20):
     result=snapshots.drop(columns=[c for c in ['d1_ret','d3_ret','d5_ret','exit_ret','evaluation'] if c in snapshots],errors='ignore').copy()
     result['evaluation']='PENDING'
     for idx,row in result.iterrows():
-        code=str(row['code']).zfill(6)
+        is_us=str(row.get('market','')).upper()=='US' or str(row.get('scan_type','')).startswith('us_')
+        zone='America/New_York' if is_us else 'Asia/Seoul'
+        code=str(row['code']).upper() if is_us else str(row['code']).zfill(6)
         bars=histories.get(code)
         if bars is None or bars.empty: continue
         bars=bars.sort_index().copy()
         dates=pd.to_datetime(bars.index)
-        if dates.tz is None: dates=dates.tz_localize('Asia/Seoul')
+        if dates.tz is None: dates=dates.tz_localize(zone)
+        else: dates=dates.tz_convert(zone)
         signal=pd.to_datetime(row['scan_time_utc'],errors='coerce')
         if pd.isna(signal):continue
         if signal.tzinfo is None: signal=signal.tz_localize('UTC')
         # Skip signal-day daily bar: its close may predate an intraday or after-hours signal.
-        future=bars[dates.date>signal.tz_convert('Asia/Seoul').date()]
+        future=bars[dates.date>signal.tz_convert(zone).date()]
         entry=float(row['price'])
         if entry<=0 or not 0<float(row['stop'])<entry<float(row['tp1']): continue
         for days in (1,3,5):

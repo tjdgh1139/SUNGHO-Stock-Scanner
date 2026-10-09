@@ -192,18 +192,19 @@ def enrich_scan_dataframe(df):
     for c in a.columns:out[c]=a[c]
     return out
 
-def save_scan_snapshot(df,scan_type="market"):
+def save_scan_snapshot(df,scan_type="market",audit_file=None):
     if df is None or len(df)==0:return
     e=enrich_scan_dataframe(df); now=datetime.now(timezone.utc).isoformat(); rows=[]
     for rank,(_,r) in enumerate(e.head(50).iterrows(),1):
         d=r.to_dict(); rows.append({"scan_time_utc":now,"scan_type":scan_type,"rank":rank,
-          "code":d.get("코드",d.get("Code","")),"name":d.get("종목",d.get("종목명",d.get("Name",""))),
+          "code":d.get("코드",d.get("Code",d.get("종목","") if scan_type.startswith("us_") else "")),"name":d.get("종목",d.get("종목명",d.get("Name",""))),
           "price":_safe_num(d.get("현재가",d.get("종가",0))),"day_score":_safe_num(d.get("단타점수",0)),
           "swing_score":_safe_num(d.get("스윙점수",0)),"long_score":_safe_num(d.get("장기점수",0)),
           "stop":_safe_num(d.get("손절기준",0)),"tp1":_safe_num(d.get("1차익절",0)),"tp2":_safe_num(d.get("2차익절",0)),
           "confidence":d.get("데이터신뢰도","")})
-    exists=AUDIT_FILE.exists()
-    with AUDIT_FILE.open("a",newline="",encoding="utf-8-sig") as f:
+    destination=AUDIT_FILE if audit_file is None else audit_file
+    exists=destination.exists()
+    with destination.open("a",newline="",encoding="utf-8-sig") as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0].keys()))
         if not exists:w.writeheader()
         w.writerows(rows)
@@ -2051,6 +2052,21 @@ def run_scan(markets, per_market, min_value, min_score):
 
 US_SYMBOLS={"MSFT":"NAS","AMD":"NAS","NVDA":"NAS","MU":"NAS","IONQ":"NYS","RKLB":"NAS","VRT":"NYS","VOO":"AMS","QQQM":"NAS","AAPL":"NAS","AMZN":"NAS"}
 
+def parse_us_watchlist(text):
+    """Explicit exchange avoids silently routing unknown tickers to Nasdaq."""
+    import re
+    result={};errors=[]
+    for token in re.split(r"[\s,;]+",text.strip().upper()):
+        if not token:continue
+        parts=token.split(":")
+        if len(parts)!=2 or parts[0] not in ("NAS","NYS","AMS") or not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}",parts[-1]):
+            errors.append(token);continue
+        exchange,symbol=parts
+        if symbol in result and result[symbol]!=exchange:
+            errors.append(token);continue
+        result[symbol]=exchange
+    return result,errors
+
 def kis_us_quote(symbol,exchange):
     if not kis_configured():return None
     try:
@@ -2066,7 +2082,52 @@ def kis_us_quote(symbol,exchange):
                 "quote_received_utc":pd.Timestamp.now(tz="UTC").isoformat(),"시세출처":"KIS 해외 REST · 거래소 시세 지연 여부 별도 확인"}
     except Exception:return None
 
-def run_us_scan(symbols,min_score):
+def normalize_us_movers(records,exchange,min_turnover=1_000_000,max_spread_pct=1.0):
+    import re
+    if exchange not in ("NAS","NYS","AMS"):raise ValueError("Invalid exchange")
+    rows=[]
+    for item in records:
+        symbol=str(item.get("symb","")).strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}",symbol):continue
+        price=_safe_num(item.get("last"));volume=_safe_num(item.get("tvol"))
+        bid=_safe_num(item.get("pbid"));ask=_safe_num(item.get("pask"));turnover=_safe_num(item.get("tamt"))
+        if price<=0:continue
+        valid_book=0<bid<=ask
+        spread=(ask-bid)/((ask+bid)/2)*100 if valid_book else float("nan")
+        eligible=valid_book and spread<=max_spread_pct and turnover>=min_turnover
+        rows.append({"코드":symbol,"종목":item.get("knam") or item.get("name") or symbol,
+          "거래소":exchange,"현재가":price,"당일등락%":_safe_num(item.get("rate")),
+          "최근5분등락%":_safe_num(item.get("n_rate")),"거래량":volume,"거래대금USD":turnover,
+          "스프레드%":spread,"기초유동성통과":bool(eligible),
+          "후보상태":"추가검증 후보" if eligible else "관찰 · 거래대금/호가 미충족",
+          "검증상태":"시세시각·뉴스·거래정지·기업행동 미검증"})
+    return pd.DataFrame(rows)
+
+def kis_us_movers(min_turnover=1_000_000):
+    if not kis_configured():return pd.DataFrame(),{"KIS":"키 설정 필요"}
+    key=secret_value("KIS_APP_KEY");secret=secret_value("KIS_APP_SECRET")
+    frames=[];diagnostics={}
+    for exchange in ("NAS","NYS","AMS"):
+        try:
+            response=kis_get("https://openapi.koreainvestment.com:9443/uapi/overseas-stock/v1/ranking/price-fluct",
+                {"appkey":key,"appsecret":secret,"tr_id":"HHDFS76260000","custtype":"P"},
+                {"EXCD":exchange,"GUBN":"1","MINX":"3","VOL_RANG":"0","KEYB":"","AUTH":""},key,secret)
+            payload=response.json()
+            if payload.get("rt_cd")!="0":
+                diagnostics[exchange]="조회 실패: "+str(payload.get("msg_cd","UNKNOWN"));continue
+            records=payload.get("output2",[])
+            if not isinstance(records,list):raise ValueError("Unexpected response shape")
+            frame=normalize_us_movers(records,exchange,min_turnover)
+            if not frame.empty:frames.append(frame)
+            diagnostics[exchange]="응답 수신 · 첫 페이지 "+str(len(frame))+"종목 · 시세 지연 미검증"
+        except Exception as error:diagnostics[exchange]=type(error).__name__
+    result=pd.concat(frames,ignore_index=True) if frames else pd.DataFrame()
+    if not result.empty:
+        result=result.drop_duplicates(["거래소","코드"]).sort_values(["기초유동성통과","최근5분등락%","거래대금USD"],ascending=False)
+        result["조회수신UTC"]=pd.Timestamp.now(tz="UTC").isoformat()
+    return result,diagnostics
+
+def run_us_scan(symbols,min_score,exchanges=None):
     out=[];end=market_date("America/New_York");start=end-dt.timedelta(days=240)
     for symbol in symbols:
         bars=prices(symbol,start.isoformat(),end.isoformat())
@@ -2074,7 +2135,7 @@ def run_us_scan(symbols,min_score):
         row=analyze(symbol,symbol,bars)
         if not row or row["점수"]<min_score:continue
         row.update({"시장":"US","currency":"USD","20일이격":100+row["20일이격%"],"거래량비":row["거래량x"],"등락률":row["등락%"]})
-        quote=kis_us_quote(symbol,US_SYMBOLS.get(symbol,"NAS"))
+        quote=kis_us_quote(symbol,(exchanges or {}).get(symbol,US_SYMBOLS.get(symbol,"NAS")))
         if quote:row.update(quote)
         out.append(row)
     if not out:return pd.DataFrame()
@@ -2273,6 +2334,11 @@ with st.expander("⚙️ 스캔 설정", expanded=False):
     min_score=st.slider("최소 점수",0,100,45,5)
     include_us=st.toggle("미국 관심종목도 함께 스캔",value=True)
     us_symbols=st.multiselect("미국 스캔 대상",list(US_SYMBOLS),default=list(US_SYMBOLS))
+    us_extra=st.text_area("미국 추가 감시종목",placeholder="NAS:종목코드, NYS:종목코드, AMS:종목코드",help="NAS=나스닥, NYS=뉴욕증권거래소, AMS=NYSE American. 시세순위 종목을 직접 추가합니다.")
+    us_extra_map,us_extra_errors=parse_us_watchlist(us_extra)
+    if us_extra_errors:st.warning("입력 확인: "+", ".join(us_extra_errors))
+    us_symbols=list(dict.fromkeys(us_symbols+list(us_extra_map)))
+    st.caption("미국: 관심종목 일봉 분석 + 별도 KIS 급등 후보 조회 · 실시간 진입 검증 미완료")
     auto_live=st.toggle("TOP 후보 자동 재평가",value=True)
     refresh_sec=st.select_slider("자동 재평가 주기(초)",options=[10,15,20,30,60],value=20)
     focus_n=st.slider("집중 감시 후보 수",10,50,30,5)
@@ -2313,7 +2379,11 @@ if scan_action.button("🚀 지금 스캔",type="primary",use_container_width=Tr
             if include_us:
                 status.info("한국 후보 분석 완료 · 미국 관심종목 분석 중")
                 us_started=time.monotonic()
-                st.session_state.us_scan=run_us_scan(us_symbols,min_score)
+                st.session_state.us_scan=run_us_scan(us_symbols,min_score,us_extra_map)
+                try:
+                    save_scan_snapshot(st.session_state.us_scan,scan_type="us_watchlist_scan",audit_file=AUDIT_DIR/"us_scan_snapshots.csv")
+                except Exception as error:
+                    st.warning("미국 신호 기록 저장 실패: "+type(error).__name__)
                 st.session_state.setdefault("scan_stage_seconds",{})["미국 관심종목"]=round(time.monotonic()-us_started,1)
             st.session_state.scan_total_seconds=round(time.monotonic()-started,1)
             if not result.empty:
@@ -2337,6 +2407,29 @@ with st.expander("🌎 지수·선물·환율",expanded=False):
     if st.button("시장 지표 갱신",use_container_width=True):st.session_state.macro=macro_snapshot()
     if "macro" in st.session_state:st.dataframe(st.session_state.macro,hide_index=True,use_container_width=True)
     st.caption("지수·환율·유가 데이터의 기준일을 확인하세요. 미연결 선물은 점수에 사용하지 않습니다.")
+
+with st.expander("🇺🇸 미국 급등 후보 탐색 · KIS",expanded=False):
+    st.caption("나스닥·NYSE·NYSE American 최근 5분 상승 순위 첫 페이지 비교. 미래에셋 순위와 동일한 집계는 아니며 전체 종목 전수 검색이 아닙니다.")
+    us_min_turnover=st.number_input("미국 후보 최소 거래대금 (USD)",min_value=0,value=1_000_000,step=100_000)
+    if st.button("미국 급등 후보 조회",key="us_movers_refresh"):
+        with st.spinner("미국 3개 거래소 후보 조회 중"):
+            movers,diagnostics=kis_us_movers(us_min_turnover)
+            st.session_state.us_movers=movers
+            st.session_state.us_mover_diagnostics=diagnostics
+    if "us_mover_diagnostics" in st.session_state:st.json(st.session_state.us_mover_diagnostics)
+    movers=st.session_state.get("us_movers",pd.DataFrame())
+    if not movers.empty:
+        st.dataframe(movers,hide_index=True,use_container_width=True)
+        if st.button("유동성 통과 후보 일봉 추가 분석",key="us_movers_analyze"):
+            eligible=movers[movers["기초유동성통과"]].head(15)
+            if eligible.empty:st.info("거래대금·호가 조건을 통과한 후보가 없습니다.")
+            else:
+                with st.spinner("최대 15종목 추가 분석 중"):
+                    mapping=dict(zip(eligible["코드"],eligible["거래소"]))
+                    st.session_state.us_scan=run_us_scan(list(mapping),0,mapping)
+                    save_scan_snapshot(st.session_state.us_scan,scan_type="us_movers_daily_scan",audit_file=AUDIT_DIR/"us_scan_snapshots.csv")
+                st.info("분석 완료 · 일봉 65개 미만 종목 제외 · 매수 신호 미검증")
+    st.warning("관찰 후보입니다. 시세 지연·세션·거래정지·뉴스·역분할·증자 확인 전 자동 매수 판단에 사용하지 않습니다.")
 
 with st.expander("🇺🇸 미국 단타·스윙·장기 후보",expanded=False):
     if not st.session_state.us_scan.empty:
@@ -2693,6 +2786,21 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
             st.success("DART 종목코드 매핑 적용 완료")
         else:
             st.error("매핑 CSV 형식을 확인해 주세요.")
+    if st.button("미국 저장 신호 결과 비교",use_container_width=True):
+        from performance import evaluate_snapshots
+        us_audit=AUDIT_DIR/"us_scan_snapshots.csv"
+        if not us_audit.exists():
+            st.info("미국 스캔을 실행하면 후보 신호가 기록됩니다.")
+        else:
+            records=pd.read_csv(us_audit,dtype={"code":str})
+            histories={}
+            for symbol in records["code"].dropna().unique()[:50]:
+                begin=pd.to_datetime(records.loc[records["code"]==symbol,"scan_time_utc"],utc=True).min().tz_convert("America/New_York").date()
+                histories[symbol]=prices(symbol,begin.isoformat(),market_date("America/New_York").isoformat())
+            evaluated=evaluate_snapshots(records,histories)
+            st.dataframe(evaluated,use_container_width=True)
+            st.download_button("미국 신호 비교 CSV",evaluated.to_csv(index=False).encode("utf-8-sig"),file_name="us_evaluated_signals.csv")
+            st.caption("미국 현지 신호일의 다음 거래일부터 일봉 비교 · 비용 20bp · 손절 우선. 실제 체결 성적이나 장중 급등 신호 검증이 아닙니다.")
     if st.button("📊 저장된 신호 성적검증",use_container_width=True):
         from performance import evaluate_snapshots
         if AUDIT_FILE.exists():
