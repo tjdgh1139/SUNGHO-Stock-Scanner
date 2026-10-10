@@ -2117,9 +2117,11 @@ def normalize_us_book(payload):
     bid_size=_safe_num(book.get("vbid1"));ask_size=_safe_num(book.get("vask1"))
     currency=str(header.get("curr","")).strip().upper()
     valid=currency=="USD" and 0<bid<=ask and bid_size>0 and ask_size>0
+    reason=("통화 미확인" if currency!="USD" else "매수·매도호가 없음" if bid<=0 or ask<=0
+        else "매수호가가 매도호가보다 높음" if bid>ask else "호가 잔량 없음" if bid_size<=0 or ask_size<=0 else "유효 · 시세 지연 별도 검증 필요")
     spread=(ask-bid)/((ask+bid)/2)*100 if valid else float("nan")
     return {"매수호가USD":bid if bid>0 else float("nan"),"매도호가USD":ask if ask>0 else float("nan"),
-        "매수잔량":bid_size,"매도잔량":ask_size,"스프레드%":spread,"호가유효":bool(valid),
+        "매수잔량":bid_size,"매도잔량":ask_size,"스프레드%":spread,"호가유효":bool(valid),"호가검증사유":reason,
         "호가일자원본":str(header.get("dymd",book.get("dymd",""))),
         "호가시간원본":str(header.get("dhms",book.get("dhms",""))),
         "호가시각상태":"원본 시각 수신 · 시간대/지연 미검증" if header.get("dhms",book.get("dhms")) else "호가 시각 미확인"}
@@ -2132,6 +2134,12 @@ def supplement_us_books(frame,min_turnover=1_000_000,limit=10):
         symbol=str(row["코드"])
         # Failure must invalidate an earlier valid book rather than retain stale eligibility.
         result.at[idx,"기초유동성통과"]=False
+        result.at[idx,"호가유효"]=False
+        for field in ("매수호가USD","매도호가USD"):result.at[idx,field]=float("nan")
+        for field in ("매수잔량","매도잔량"):result.at[idx,field]=0
+        for field in ("호가일자원본","호가시간원본","호가조회수신UTC"):result.at[idx,field]=""
+        result.at[idx,"호가시각상태"]="이번 조회 미확인"
+        result.at[idx,"호가검증사유"]="이번 조회 미확인"
         result.at[idx,"스프레드%"] = float("nan")
         result.at[idx,"후보상태"]="관찰 · 호가 확인 대기"
         try:
@@ -2145,8 +2153,11 @@ def supplement_us_books(frame,min_turnover=1_000_000,limit=10):
             eligible=parsed["호가유효"] and parsed["스프레드%"]<=1.0 and amount>=min_turnover and amount>0
             result.at[idx,"기초유동성통과"]=bool(eligible)
             result.at[idx,"후보상태"]="유동성 통과 · 시세시각 추가검증" if eligible else "관찰 · 거래대금/호가 미충족"
-            diagnostics[symbol]=("유효 호가 수신 · " if parsed["호가유효"] else "API 응답 수신 · 유효 호가 없음 · ")+parsed["호가시각상태"]
-        except Exception as error:diagnostics[symbol]=type(error).__name__
+            diagnostics[symbol]=("유효 호가 수신 · " if parsed["호가유효"] else "API 응답 수신 · 유효 호가 없음 · "+parsed["호가검증사유"]+" · ")+parsed["호가시각상태"]
+        except Exception as error:
+            result.at[idx,"후보상태"]="관찰 · 이번 호가 조회 실패"
+            result.at[idx,"호가검증사유"]="조회 실패 · "+type(error).__name__
+            diagnostics[symbol]=type(error).__name__
     return result,diagnostics
 
 def supplement_us_turnover(frame,min_turnover=1_000_000,limit=10):
