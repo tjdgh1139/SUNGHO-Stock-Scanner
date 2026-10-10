@@ -2109,6 +2109,46 @@ def normalize_us_movers(records,exchange,min_turnover=1_000_000,max_spread_pct=1
           "검증상태":"시세시각·뉴스·거래정지·기업행동 미검증"})
     return pd.DataFrame(rows)
 
+def normalize_us_book(payload):
+    if payload.get("rt_cd")!="0":raise ValueError(str(payload.get("msg_cd","API_ERROR")))
+    header=payload.get("output1",{});book=payload.get("output2",{})
+    if not isinstance(header,dict) or not isinstance(book,dict):raise ValueError("Unexpected book shape")
+    bid=_safe_num(book.get("pbid1"));ask=_safe_num(book.get("pask1"))
+    bid_size=_safe_num(book.get("vbid1"));ask_size=_safe_num(book.get("vask1"))
+    currency=str(header.get("curr","")).strip().upper()
+    valid=currency=="USD" and 0<bid<=ask and bid_size>0 and ask_size>0
+    spread=(ask-bid)/((ask+bid)/2)*100 if valid else float("nan")
+    return {"매수호가USD":bid if bid>0 else float("nan"),"매도호가USD":ask if ask>0 else float("nan"),
+        "매수잔량":bid_size,"매도잔량":ask_size,"스프레드%":spread,"호가유효":bool(valid),
+        "호가일자원본":str(header.get("dymd",book.get("dymd",""))),
+        "호가시간원본":str(header.get("dhms",book.get("dhms",""))),
+        "호가시각상태":"원본 시각 수신 · 시간대/지연 미검증" if header.get("dhms",book.get("dhms")) else "호가 시각 미확인"}
+
+def supplement_us_books(frame,min_turnover=1_000_000,limit=10):
+    result=frame.copy();diagnostics={}
+    if result.empty or not kis_configured():return result,{"상태":"후보 또는 KIS 설정 없음"}
+    key=secret_value("KIS_APP_KEY");secret=secret_value("KIS_APP_SECRET")
+    for idx,row in result.head(limit).iterrows():
+        symbol=str(row["코드"])
+        # Failure must invalidate an earlier valid book rather than retain stale eligibility.
+        result.at[idx,"기초유동성통과"]=False
+        result.at[idx,"스프레드%"] = float("nan")
+        result.at[idx,"후보상태"]="관찰 · 호가 확인 대기"
+        try:
+            response=kis_get("https://openapi.koreainvestment.com:9443/uapi/overseas-price/v1/quotations/inquire-asking-price",
+                {"appkey":key,"appsecret":secret,"tr_id":"HHDFS76200100","custtype":"P"},
+                {"AUTH":"","EXCD":str(row["거래소"]),"SYMB":symbol},key,secret)
+            parsed=normalize_us_book(response.json())
+            for field,value in parsed.items():result.at[idx,field]=value
+            result.at[idx,"호가조회수신UTC"]=pd.Timestamp.now(tz="UTC").isoformat()
+            amount=_safe_num(row.get("거래대금USD"))
+            eligible=parsed["호가유효"] and parsed["스프레드%"]<=1.0 and amount>=min_turnover and amount>0
+            result.at[idx,"기초유동성통과"]=bool(eligible)
+            result.at[idx,"후보상태"]="유동성 통과 · 시세시각 추가검증" if eligible else "관찰 · 거래대금/호가 미충족"
+            diagnostics[symbol]="호가 수신 · "+parsed["호가시각상태"]
+        except Exception as error:diagnostics[symbol]=type(error).__name__
+    return result,diagnostics
+
 def supplement_us_turnover(frame,min_turnover=1_000_000,limit=10):
     result=frame.copy();diagnostics={}
     if result.empty or not kis_configured():return result,{"상태":"후보 또는 KIS 설정 없음"}
@@ -2459,6 +2499,12 @@ with st.expander("🇺🇸 미국 급등 후보 탐색 · KIS",expanded=False):
                 st.session_state.us_movers=movers
                 st.session_state.us_turnover_diagnostics=detail_diagnostics
         if "us_turnover_diagnostics" in st.session_state:st.json(st.session_state.us_turnover_diagnostics)
+        if st.button("상위 10종목 호가·원본 시각 확인",key="us_book_refresh"):
+            with st.spinner("KIS 매수·매도 호가 확인 중"):
+                movers,book_diagnostics=supplement_us_books(movers,us_min_turnover)
+                st.session_state.us_movers=movers
+                st.session_state.us_book_diagnostics=book_diagnostics
+        if "us_book_diagnostics" in st.session_state:st.json(st.session_state.us_book_diagnostics)
         st.dataframe(movers,hide_index=True,use_container_width=True)
         if st.button("유동성 통과 후보 일봉 추가 분석",key="us_movers_analyze"):
             eligible=movers[movers["기초유동성통과"]].head(15)
