@@ -2109,6 +2109,34 @@ def normalize_us_movers(records,exchange,min_turnover=1_000_000,max_spread_pct=1
           "검증상태":"시세시각·뉴스·거래정지·기업행동 미검증"})
     return pd.DataFrame(rows)
 
+def supplement_us_turnover(frame,min_turnover=1_000_000,limit=10):
+    result=frame.copy();diagnostics={}
+    if result.empty or not kis_configured():return result,{"상태":"후보 또는 KIS 설정 없음"}
+    key=secret_value("KIS_APP_KEY");secret=secret_value("KIS_APP_SECRET")
+    for idx,row in result.head(limit).iterrows():
+        symbol=str(row["코드"]);exchange=str(row["거래소"])
+        try:
+            response=kis_get("https://openapi.koreainvestment.com:9443/uapi/overseas-price/v1/quotations/price-detail",
+                {"appkey":key,"appsecret":secret,"tr_id":"HHDFS76200200","custtype":"P"},
+                {"AUTH":"","EXCD":exchange,"SYMB":symbol},key,secret)
+            payload=response.json()
+            if payload.get("rt_cd")!="0":
+                diagnostics[symbol]="조회 실패: "+str(payload.get("msg_cd","UNKNOWN"));continue
+            detail=payload.get("output",{})
+            amount=_safe_num(detail.get("tamt"));currency=str(detail.get("curr","")).upper()
+            if amount<=0 or currency!="USD":
+                diagnostics[symbol]="거래대금 또는 USD 통화 미확인";continue
+            result.at[idx,"거래대금USD"]=amount
+            result.at[idx,"거래대금상태"]="KIS 현재가 상세 수신 · 시세시각 미검증"
+            result.at[idx,"거래대금조회UTC"]=pd.Timestamp.now(tz="UTC").isoformat()
+            spread=pd.to_numeric(row.get("스프레드%"),errors="coerce")
+            eligible=amount>=min_turnover and pd.notna(spread) and spread<=1.0
+            result.at[idx,"기초유동성통과"]=bool(eligible)
+            result.at[idx,"후보상태"]="추가검증 후보" if eligible else "관찰 · 거래대금/호가 미충족"
+            diagnostics[symbol]="거래대금 수신 · 호가는 이전 순위 조회 값"
+        except Exception as error:diagnostics[symbol]=type(error).__name__
+    return result,diagnostics
+
 def kis_us_movers(min_turnover=1_000_000):
     if not kis_configured():return pd.DataFrame(),{"KIS":"키 설정 필요"}
     key=secret_value("KIS_APP_KEY");secret=secret_value("KIS_APP_SECRET")
@@ -2425,6 +2453,12 @@ with st.expander("🇺🇸 미국 급등 후보 탐색 · KIS",expanded=False):
     if "us_mover_diagnostics" in st.session_state:st.json(st.session_state.us_mover_diagnostics)
     movers=st.session_state.get("us_movers",pd.DataFrame())
     if not movers.empty:
+        if st.button("상위 10종목 거래대금 원본 확인",key="us_turnover_refresh"):
+            with st.spinner("KIS 현재가 상세 조회 중"):
+                movers,detail_diagnostics=supplement_us_turnover(movers,us_min_turnover)
+                st.session_state.us_movers=movers
+                st.session_state.us_turnover_diagnostics=detail_diagnostics
+        if "us_turnover_diagnostics" in st.session_state:st.json(st.session_state.us_turnover_diagnostics)
         st.dataframe(movers,hide_index=True,use_container_width=True)
         if st.button("유동성 통과 후보 일봉 추가 분석",key="us_movers_analyze"):
             eligible=movers[movers["기초유동성통과"]].head(15)
