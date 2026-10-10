@@ -2145,7 +2145,7 @@ def supplement_us_books(frame,min_turnover=1_000_000,limit=10):
             eligible=parsed["호가유효"] and parsed["스프레드%"]<=1.0 and amount>=min_turnover and amount>0
             result.at[idx,"기초유동성통과"]=bool(eligible)
             result.at[idx,"후보상태"]="유동성 통과 · 시세시각 추가검증" if eligible else "관찰 · 거래대금/호가 미충족"
-            diagnostics[symbol]="호가 수신 · "+parsed["호가시각상태"]
+            diagnostics[symbol]=("유효 호가 수신 · " if parsed["호가유효"] else "API 응답 수신 · 유효 호가 없음 · ")+parsed["호가시각상태"]
         except Exception as error:diagnostics[symbol]=type(error).__name__
     return result,diagnostics
 
