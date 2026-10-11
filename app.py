@@ -2160,6 +2160,61 @@ def supplement_us_books(frame,min_turnover=1_000_000,limit=10):
             diagnostics[symbol]=type(error).__name__
     return result,diagnostics
 
+def minute_setup_signal(history,now=None):
+    """Completed one-minute bars only; diagnostic setup, not order permission."""
+    wait=lambda reason:{"신호":"대기","근거":reason,"자동주문허용":False}
+    if history is None or history.empty:return wait("분봉 없음")
+    required=["시가","고가","저가","종가","거래량"]
+    if any(c not in history for c in required):return wait("OHLCV 누락")
+    clock=pd.Timestamp.now(tz="Asia/Seoul") if now is None else pd.Timestamp(now)
+    if clock.tzinfo is None:return wait("현재 시각 시간대 미확인")
+    clock=clock.tz_convert("Asia/Seoul")
+    if not isinstance(history.index,pd.DatetimeIndex):return wait("분봉 시각 형식 미확인")
+    bars=history[required].copy()
+    bars.index=bars.index.tz_localize("Asia/Seoul") if bars.index.tz is None else bars.index.tz_convert("Asia/Seoul")
+    if bars.index.hasnans or bars.index.has_duplicates:return wait("분봉 시각 누락/중복")
+    bars=bars.sort_index()
+    if (bars.index>clock).any():return wait("미래 분봉 시각")
+    bars=bars[(bars.index.date==clock.date()) & (bars.index+pd.Timedelta(minutes=1)<=clock)]
+    if len(bars)<21:return wait("완료된 당일 분봉 21개 필요")
+    bars=bars.tail(21).apply(pd.to_numeric,errors="coerce")
+    if bars.isna().any().any() or not np.isfinite(bars.to_numpy()).all():return wait("분봉 숫자 오류")
+    if (bars[["시가","고가","저가","종가"]]<=0).any().any() or (bars["거래량"]<0).any():return wait("가격/거래량 오류")
+    if ((bars["고가"]<bars[["시가","종가","저가"]].max(axis=1)) | (bars["저가"]>bars[["시가","종가"]].min(axis=1))).any():return wait("OHLC 범위 오류")
+    if (clock-bars.index[-1]).total_seconds()>180:return wait("분봉 지연 · 3분 초과")
+    if (bars.index.to_series().diff().dropna()!=pd.Timedelta(minutes=1)).any():return wait("분봉 간격 누락 · 연속성 미확인")
+    previous=bars.iloc[:-1];latest=bars.iloc[-1]
+    total_volume=bars["거래량"].sum();baseline=previous["거래량"].mean()
+    if total_volume<=0 or baseline<=0 or latest["거래량"]<=0:return wait("거래량 확인 불가")
+    typical=(bars["고가"]+bars["저가"]+bars["종가"])/3
+    window_vwap=float((typical*bars["거래량"]).sum()/total_volume)
+    upper=float(previous["고가"].max());lower=float(previous["저가"].min())
+    close=float(latest["종가"]);volume_ratio=float(latest["거래량"]/baseline)
+    ma5=float(bars["종가"].tail(5).mean());ma20=float(bars["종가"].tail(20).mean())
+    trend=ma5>ma20 and ma5>float(previous["종가"].tail(5).mean())
+    breakout=close>upper and close>window_vwap and trend and volume_ratio>=1.5
+    overextended=(close/upper-1)>0.02
+    breakdown=close<lower or (float(previous.iloc[-1]["종가"])>=window_vwap and close<window_vwap and ma5<ma20 and volume_ratio>=1.5)
+    signal="청산 검토" if breakdown else "진입 검토" if breakout and not overextended else "대기"
+    reason="박스 이탈 또는 VWAP·추세 약화" if breakdown else "박스 돌파·구간 VWAP·추세·거래량 확인" if breakout and not overextended else "돌파 후 2% 초과 추격 구간" if breakout else "돌파 확인 조건 미충족"
+    return {"신호":signal,"근거":reason,"박스상단":upper,"박스하단":lower,"구간VWAP":window_vwap,
+        "거래량배수":round(volume_ratio,2),"기준분봉":bars.index[-1].isoformat(),"자동주문허용":False,
+        "검증범위":"최근 완료 21분봉 기술 조건 · 당일 전체 VWAP 아님 · 수급/뉴스/호가/성과 검증 별도"}
+
+def us_book_connection_probe():
+    # A control sample helps distinguish candidate-specific empty books from a
+    # wider access/session issue. It is diagnostic only, never a trade signal.
+    controls=pd.DataFrame([
+        {"코드":"NVDA","거래소":"NAS"},
+        {"코드":"VRT","거래소":"NYS"},
+        {"코드":"VOO","거래소":"AMS"}])
+    frame,diagnostics=supplement_us_books(controls,limit=3)
+    valid=int(frame.get("호가유효",pd.Series(False,index=frame.index)).fillna(False).sum())
+    summary={"유효호가종목수":valid,"비교종목수":3,
+        "판정":"일부 비교종목 유효 호가 확인 · 지연/권한 범위 별도 확인" if valid else "비교종목도 유효 호가 미확인 · 장 운영/시세 권한/응답 구조 점검 필요",
+        "주의":"REST 진단이며 WebSocket 연결 또는 실시간 시세 검증 통과를 의미하지 않습니다."}
+    return frame,diagnostics,summary
+
 def supplement_us_turnover(frame,min_turnover=1_000_000,limit=10):
     result=frame.copy();diagnostics={}
     if result.empty or not kis_configured():return result,{"상태":"후보 또는 KIS 설정 없음"}
@@ -2496,6 +2551,17 @@ with st.expander("🌎 지수·선물·환율",expanded=False):
 with st.expander("🇺🇸 미국 급등 후보 탐색 · KIS",expanded=False):
     st.caption("나스닥·NYSE·NYSE American 최근 5분 상승 순위 첫 페이지 비교. 미래에셋 순위와 동일한 집계는 아니며 전체 종목 전수 검색이 아닙니다.")
     us_min_turnover=st.number_input("미국 후보 최소 거래대금 (USD)",min_value=0,value=1_000_000,step=100_000)
+    if st.button("미국 호가 연결 비교 진단",key="us_book_probe"):
+        with st.spinner("NVDA·VRT·VOO 3종목 호가 비교 중"):
+            probe_frame,probe_diagnostics,probe_summary=us_book_connection_probe()
+            st.session_state.us_book_probe_result=(probe_frame,probe_diagnostics,probe_summary)
+    if "us_book_probe_result" in st.session_state:
+        probe_frame,probe_diagnostics,probe_summary=st.session_state.us_book_probe_result
+        st.json(probe_summary)
+        st.json(probe_diagnostics)
+        st.dataframe(probe_frame,hide_index=True,use_container_width=True)
+        st.download_button("호가 비교 진단 CSV 저장",probe_frame.to_csv(index=False).encode("utf-8-sig"),
+            "us_book_probe.csv","text/csv",key="us_book_probe_csv")
     if st.button("미국 급등 후보 조회",key="us_movers_refresh"):
         with st.spinner("미국 3개 거래소 후보 조회 중"):
             movers,diagnostics=kis_us_movers(us_min_turnover)
@@ -2624,6 +2690,9 @@ if not df.empty:
         if st.button("분봉 갱신",key=f"minute_{t}",use_container_width=True):
             minutes=kis_minute_history(t)
             if not minutes.empty:
+                st.markdown("**분봉 진입·청산 조건 점검**")
+                st.json(minute_setup_signal(minutes))
+                st.caption("기술 조건 진입 검토는 매수 확정이 아닙니다. 현재 호가·수급·뉴스와 기존 진입 제한을 함께 확인하세요.")
                 chart=decorate_chart(minutes)
                 st.plotly_chart(candle_chart(chart,title=f"{label} 당일 분봉",minute=True),
                                 use_container_width=True,config={"displaylogo":False,"scrollZoom":False})
