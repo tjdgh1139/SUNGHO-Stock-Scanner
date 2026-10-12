@@ -1218,6 +1218,14 @@ def live_release_gate():
     rows=pd.DataFrame([{"항목":k,"필수":True,"상태":"PASS" if v else "UNVERIFIED"} for k,v in checks.items()])
     return pd.concat([df,rows],ignore_index=True),static_ok,all(checks.values()),"미검증: "+", ".join(k for k,v in checks.items() if not v)
 
+def check_automatic_feeds():
+    """Persist a manual check before the page's automatic reranking runs."""
+    st.session_state.feed_diagnostics={}
+    if ensure_dart_map():dart_recent_disclosures(dart_corp_code('005930'),days=30)
+    refresh_news_candidates(pd.DataFrame([{'코드':'005930','종목':'삼성전자'}]),ttl=0)
+    st.session_state.feed_check_result=dict(st.session_state.get('feed_diagnostics',{}))
+    st.session_state.feed_check_time=pd.Timestamp.now(tz='Asia/Seoul').strftime('%Y-%m-%d %H:%M:%S KST')
+
 st.set_page_config(
     page_title="SUNGHO Scanner",
     page_icon="📈",
@@ -1530,6 +1538,10 @@ def kis_market_code():
     value=secret_value("KIS_MARKET_DIV_CODE") or "UN"
     return value if value in ("J","NX","UN") else "UN"
 
+def equity_ws_market():
+    value=st.session_state.get('equity_ws_market',kis_market_code())
+    return value if value in ('J','NX','UN') else kis_market_code()
+
 def kis_quote(code,market=None):
     if not kis_configured():
         return None
@@ -1774,6 +1786,7 @@ class KISLiveTape:
         self.error=""
         self.connected=False
         self.acknowledged=set()
+        self.subscription_by_code={}
         self.reconnect_count=0
         self.close_code=None
         self.subscription_code=""
@@ -1811,13 +1824,29 @@ class KISLiveTape:
                 self.codes=wanted
                 self.code=wanted[0]
                 self.by_code={code:self.by_code.get(code,{}) for code in wanted}
+                self.subscription_by_code={code:self.subscription_by_code.get(code,{}) for code in wanted}
                 self.data=dict(self.by_code.get(self.code,{}))
 
     def diagnostics(self):
         with self.lock:
             return {"connected":self.connected,"approved_channels":sorted(self.acknowledged),
+                    "market":self.market,"symbol_responses":{code:dict(channels) for code,channels in self.subscription_by_code.items()},
                     "contract_code":self.code or "","symbols":list(self.codes),"reconnect_count":self.reconnect_count,"error":self.error,
                     "close_code":self.close_code,"subscription_code":self.subscription_code}
+
+    def record_subscription_receipt(self,obj):
+        header=obj.get('header',{});body=obj.get('body',{})
+        code=str(header.get('tr_key') or body.get('tr_key') or '')
+        channel=str(header.get('tr_id',''))
+        allowed={'H0UNCNT0','H0UNASP0','H0UNPGM0','H0STCNT0','H0STASP0','H0STPGM0','H0NXCNT0','H0NXASP0','H0NXPGM0'}
+        if len(code)!=6 or not code.isascii() or not code.isdigit() or channel not in allowed or 'rt_cd' not in body:return
+        raw=str(body.get('msg_cd',''))
+        safe=raw if 1<=len(raw)<=32 and all(c.isascii() and (c.isalnum() or c in '_-') for c in raw) else 'UNKNOWN'
+        with self.lock:
+            if code not in self.codes:return
+            self.subscription_by_code.setdefault(code,{})[channel]={
+                'status':'응답 성공' if str(body['rt_cd'])=='0' else '구독 거절',
+                'response_code':safe,'received_utc':pd.Timestamp.now(tz='UTC').isoformat()}
 
     def stop(self):
         self.stop_event.set()
@@ -1828,6 +1857,7 @@ class KISLiveTape:
         with self.lock:
             self.connected=False
             self.acknowledged.clear()
+            self.subscription_by_code.clear()
 
     def start(self, code, appkey, appsecret, market="UN"):
         owner_lock,owners=websocket_owners()
@@ -1875,6 +1905,7 @@ class KISLiveTape:
         self.data={}
         self.acknowledged=set()
         self.error=""
+        self.subscription_by_code={}
         self.thread=threading.Thread(
             target=self._run,args=(code,appkey,appsecret,market),daemon=True)
         self.thread.start()
@@ -1914,6 +1945,7 @@ class KISLiveTape:
                 self.connected=True
                 self.acknowledged.clear()
                 self.error=""
+                self.subscription_by_code.clear()
             with self.subscription_lock:
                 for symbol in self.codes:
                     for channel in channels:
@@ -1929,6 +1961,7 @@ class KISLiveTape:
             with self.lock:
                 self.connected=False
                 self.acknowledged.clear()
+                self.subscription_by_code.clear()
                 self.close_code=args[0] if args and isinstance(args[0],int) else None
 
         def on_message(ws, message):
@@ -1950,6 +1983,7 @@ class KISLiveTape:
                     # KIS sends JSON subscription acknowledgements / ping messages.
                     try:
                         obj=json.loads(message)
+                        self.record_subscription_receipt(obj)
                         if obj.get("header",{}).get("tr_id")=="PINGPONG":
                             ws.send(message,opcode=websocket.ABNF.OPCODE_PONG)
                         elif obj.get("body",{}).get("rt_cd")=="0":
@@ -1996,13 +2030,13 @@ class KISLiveTape:
             self.connected=False
 
 @st.cache_resource(show_spinner=False)
-def _cached_live_tape(session_id, protocol_version="multi-v1"):
+def _cached_live_tape(session_id, protocol_version="multi-v2"):
     return KISLiveTape()
 
 def live_tape():
     import uuid
     sid=st.session_state.setdefault("tape_session_id",str(uuid.uuid4()))
-    return _cached_live_tape(sid,"multi-v1")
+    return _cached_live_tape(sid,"multi-v2")
 
 
 def add_trade_levels(a, d):
@@ -2866,7 +2900,7 @@ if not df.empty:
             held=st.session_state.get("holdings",pd.DataFrame())
             holding_codes=held["코드"].astype(str).tolist() if "코드" in held else []
             monitor_codes=list(dict.fromkeys(holding_codes+df.head(5)["코드"].astype(str).tolist()))[:10]
-            live_tape().start(monitor_codes,secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
+            live_tape().start(monitor_codes,secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),equity_ws_market())
             diagnostic=live_tape().diagnostics()
             st.caption("실시간 구독 요청: "+", ".join(diagnostic["symbols"])+" · 소켓 "+str(diagnostic["connected"]))
             if diagnostic["error"]:st.warning(diagnostic["error"])
@@ -3073,7 +3107,7 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
             if st.session_state.get("candidate_monitor_enabled") and not st.session_state.holdings.empty and kis_configured():
                 held=st.session_state.holdings["코드"].astype(str).tolist()
                 candidates=st.session_state.scan.head(5)["코드"].astype(str).tolist() if "코드" in st.session_state.scan else []
-                live_tape().start(list(dict.fromkeys(held+candidates))[:10],secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
+                live_tape().start(list(dict.fromkeys(held+candidates))[:10],secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),equity_ws_market())
             st.success("현재 세션에 저장했습니다. 재부팅 전 CSV를 내려받으세요.")
         except ValueError as exc:st.error(str(exc))
     refresh_plans=st.button("보유종목 차트 기준 분석 / 갱신",use_container_width=True)
@@ -3100,11 +3134,14 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
             st.session_state.candidate_monitor_enabled=True
             held=st.session_state.holdings["코드"].astype(str).tolist()
             candidates=st.session_state.scan.head(5)["코드"].astype(str).tolist() if "코드" in st.session_state.scan else []
-            live_tape().start(list(dict.fromkeys(held+candidates))[:10],secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
+            live_tape().start(list(dict.fromkeys(held+candidates))[:10],secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),equity_ws_market())
     if stop_holdings.button("감시 중지",key="holding_monitor_stop",use_container_width=True):
         st.session_state.candidate_monitor_enabled=False
         live_tape().stop()
     with st.expander("보유종목 연결 비교 진단 · KRX / 통합",expanded=False):
+        market_labels={'UN':'통합 시세','J':'KRX 시세','NX':'NXT 시세'}
+        st.selectbox('실시간 체결 수신 시장',['UN','J','NX'],index=['UN','J','NX'].index(kis_market_code()),format_func=lambda code:market_labels[code],key='equity_ws_market')
+        st.caption('WebSocket 수신 경로 선택 · REST 설정과 별도 · 다음 감시 갱신에 적용됩니다. NXT 미대상 종목은 NXT 데이터가 없을 수 있습니다.')
         if st.button("보유종목 REST 연결 비교",key="holdings_quote_probe"):
             with st.spinner("KRX·통합 가격과 가격제한폭 비교 중"):
                 st.session_state.holdings_quote_probe_result=holdings_quote_probe(st.session_state.holdings)
@@ -3112,9 +3149,12 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
             st.dataframe(st.session_state.holdings_quote_probe_result,hide_index=True,use_container_width=True,
                 column_config={c:st.column_config.NumberColumn(c,format="%,.0f원") for c in ['REST현재가','하한가','상한가','기준가']})
         ws_rows=[]
+        symbol_responses=live_tape().diagnostics().get('symbol_responses',{})
         for code in st.session_state.holdings.get('코드',[]):
             data,connected,error=live_tape().snapshot(str(code).zfill(6))
+            responses=symbol_responses.get(str(code).zfill(6),{})
             ws_rows.append({'코드':str(code).zfill(6),'소켓연결':connected,
+                '구독응답':' / '.join(channel+': '+receipt['status']+' '+receipt['response_code'] for channel,receipt in responses.items()) or '종목별 응답 미확인',
                 **{label:('30초 이내 수신' if timestamp_fresh(data.get(field),seconds=30) else '미수신·30초 초과')
                    for label,field in [('체결','trade_received_utc'),('호가','book_received_utc'),('프로그램','program_received_utc')]}})
         if ws_rows:st.dataframe(pd.DataFrame(ws_rows),hide_index=True,use_container_width=True)
@@ -3175,7 +3215,7 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
     st.markdown("**릴리스 준비상태**")
     st.dataframe(ready_df,hide_index=True,use_container_width=True)
     if st.button("WebSocket 검증 연결 시작 (삼성전자)",use_container_width=True):
-        if kis_configured():live_tape().start("005930",secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),kis_market_code())
+        if kis_configured():live_tape().start("005930",secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),equity_ws_market())
         else:st.warning("배포된 앱의 KIS 설정을 읽을 수 없습니다.")
     @st.fragment(run_every="2s")
     def render_verification_connection():
@@ -3212,14 +3252,8 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
     if holidayfile is not None and st.button("KRX 휴장일 적용",use_container_width=True):
         if load_krx_holidays_csv(holidayfile.getvalue()): st.success("KRX 휴장일 캘린더 적용 완료")
         else: st.error("휴장일 CSV 형식을 확인해 주세요.")
-    if st.button("공시·뉴스 자동 연결 점검",use_container_width=True):
-        st.session_state.feed_diagnostics={}
-        if ensure_dart_map():
-            dart_recent_disclosures(dart_corp_code("005930"),days=30)
-        refresh_news_candidates(pd.DataFrame([{"코드":"005930","종목":"삼성전자"}]),ttl=0)
-        st.caption("삼성전자 최근 30일 공시로 연결 검사 · 스캔 점수에는 기존 최근 2일 기준 유지. NO_DISCLOSURES는 정상 응답이지만 기간 내 공시 없음입니다.")
-        st.session_state.feed_check_result=dict(st.session_state.get("feed_diagnostics",{}))
-        st.session_state.feed_check_time=pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S KST")
+    st.button("공시·뉴스 자동 연결 점검",use_container_width=True,on_click=check_automatic_feeds)
+    st.caption("수동 검사는 자동 재평가 전에 결과 저장 · 삼성전자 최근 30일 공시로 연결 검사 · 스캔 점수는 최근 2일 기준 유지. NO_DISCLOSURES는 정상 응답이지만 기간 내 공시 없음입니다.")
     if "feed_check_result" in st.session_state:
         st.caption("마지막 수동 연결 점검: "+st.session_state.get("feed_check_time",""))
         st.write(st.session_state.feed_check_result)
