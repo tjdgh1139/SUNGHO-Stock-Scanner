@@ -234,7 +234,11 @@ def intraday_candidate_comparison(history,quotes,now=None):
     data=history.copy();data['_time']=pd.to_datetime(data['scan_time_utc'],utc=True,errors='coerce')
     data=data[(data['_time'].dt.tz_convert('Asia/Seoul').dt.date==day)&(data['_time']<=clock)]
     if 'market' in data:data=data[data['market'].fillna('KR')!='US']
-    data=data.sort_values('_time').drop_duplicates('code',keep='first').head(50)
+    if 'rank' in data:
+        data['_rank']=pd.to_numeric(data['rank'],errors='coerce')
+        data=data.sort_values(['_time','_rank'],kind='stable')
+    else:data=data.sort_values('_time',kind='stable')
+    data=data.drop_duplicates('code',keep='first').head(50)
     rows=[]
     for _,signal in data.iterrows():
         code=str(signal['code']).zfill(6);q=quotes.get(code,{}) or {}
