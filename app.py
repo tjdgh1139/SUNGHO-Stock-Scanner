@@ -1595,6 +1595,24 @@ def kis_investor(code):
     except Exception:
         return pd.DataFrame()
 
+def latest_prior_investor_row(frame, now=None):
+    """Exclude today's provisional row; never convert absent history to zero flow."""
+    required=['일자','외국인','기관','개인']
+    if frame is None or frame.empty or any(c not in frame for c in required):return None
+    clock=pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz='Asia/Seoul')
+    if clock.tzinfo is None:clock=clock.tz_localize('Asia/Seoul')
+    else:clock=clock.tz_convert('Asia/Seoul')
+    out=frame[required].copy()
+    dates=out['일자'].astype(str).str.replace('-','',regex=False)
+    parsed=pd.to_datetime(dates.where(dates.str.fullmatch(r'\d{8}')),format='%Y%m%d',errors='coerce')
+    out['_date']=parsed
+    for field in required[1:]:out[field]=pd.to_numeric(out[field],errors='coerce')
+    out=out[(parsed<clock.tz_localize(None).normalize()) & np.isfinite(out[required[1:]]).all(axis=1)]
+    if out.empty:return None
+    row=out.sort_values('_date',ascending=False).iloc[0].drop(labels=['_date'])
+    row['일자']=out['_date'].max().strftime('%Y%m%d')
+    return row
+
 @st.cache_data(ttl=60,show_spinner=False)
 def kis_estimated_investor(code):
     """Official intraday estimates, distinct from confirmed investor history."""
@@ -2078,8 +2096,8 @@ def run_scan(markets, per_market, min_value, min_score):
     if kis_configured():
         for idx in frame.sort_values("점수",ascending=False).head(10).index:
             inv=kis_investor(frame.at[idx,"코드"])
-            if not inv.empty:
-                latest=inv.sort_values("일자",ascending=False).iloc[0]
+            latest=latest_prior_investor_row(inv)
+            if latest is not None:
                 frame.at[idx,"수급기준일"]=str(latest["일자"])
                 for key in ["외국인","기관","개인"]:frame.at[idx,key]=latest[key]
     # Map original scanner fields into the normalized ULTIMATE scoring schema.
@@ -2784,8 +2802,10 @@ if not df.empty:
 
     st.subheader("🔎 상세 분석")
     opts={f"{r['종목']} ({r['코드']})":r["코드"] for _,r in df.iterrows()}
-    label=st.selectbox("종목 선택",list(opts))
-    t=opts[label]; row=df[df["코드"]==t].iloc[0]
+    labels_by_code={code:label for label,code in opts.items()}
+    # Ranking changes must not change the user's chart selection.
+    t=st.selectbox("종목 선택",sorted(labels_by_code),format_func=lambda code:labels_by_code[code],key="kr_detail_symbol")
+    label=labels_by_code[t]; row=df[df["코드"]==t].iloc[0]
     end=business_day()
     h=prices(t,ymd(end-dt.timedelta(days=180)),ymd(end))
     chart_panel,evidence_panel=st.columns([2.2,1])
@@ -2862,14 +2882,16 @@ if not df.empty:
         st.caption(f"총매수잔량 {int(ob['총매수잔량']):,} · 총매도잔량 {int(ob['총매도잔량']):,}")
 
     inv=kis_investor(t)
-    if not inv.empty:
+    latest=latest_prior_investor_row(inv)
+    if latest is not None:
         st.markdown("**외국인·기관 수급 (KIS 제공 확정 데이터)**")
-        latest=inv.iloc[0]
+        st.caption("수급 기준일: "+str(latest['일자'])+" · 이전 거래일 자료 · 당일 실시간 수급 아님")
         i1,i2,i3=st.columns(3)
         i1.metric("외국인 순매수",f"{int(latest['외국인']):,}주")
         i2.metric("기관 순매수",f"{int(latest['기관']):,}주")
         i3.metric("개인 순매수",f"{int(latest['개인']):,}주")
         st.caption("※ KIS 공식 안내상 종목별 투자자 당일 데이터는 장 종료 후 제공됩니다.")
+    else:st.caption("이전 거래일 확정 수급 미확인 · 당일 응답의 0주를 확정 수급으로 표시하지 않습니다.")
 
     estimated=kis_estimated_investor(t)
     if not estimated.empty:
