@@ -204,12 +204,54 @@ def save_scan_snapshot(df,scan_type="market",audit_file=None):
           "swing_score":_safe_num(d.get("스윙점수",0)),"long_score":_safe_num(d.get("장기점수",0)),
           "stop":_safe_num(d.get("손절기준",0)),"tp1":_safe_num(d.get("1차익절",0)),"tp2":_safe_num(d.get("2차익절",0)),
           "confidence":d.get("데이터신뢰도","")})
+        rows[-1].update(entry_permission=execution_permission(d,row_live_health(d)),
+            entry_reason=entry_gate_reason(d),entry_low=_safe_num(d.get('매수관심하단')),
+            entry_high=_safe_num(d.get('매수관심상단')),live_score=_safe_num(d.get('실시간단타점수')),
+            build_id=build_id(),market='US' if scan_type.startswith('us_') else 'KR')
     destination=AUDIT_FILE if audit_file is None else audit_file
     exists=destination.exists()
+    if exists:
+        with destination.open(encoding='utf-8-sig',newline='') as source:columns=next(csv.reader(source),[])
+        if set(rows[0])-set(columns):
+            legacy=pd.read_csv(destination,dtype={'code':str})
+            columns=list(dict.fromkeys(columns+list(rows[0])))
+            temporary=destination.with_suffix('.migrate.tmp')
+            temporary.write_bytes(legacy.reindex(columns=columns).to_csv(index=False).encode('utf-8-sig'))
+            temporary.replace(destination)
+    else:columns=list(rows[0])
     with destination.open("a",newline="",encoding="utf-8-sig") as f:
-        w=csv.DictWriter(f,fieldnames=list(rows[0].keys()))
+        w=csv.DictWriter(f,fieldnames=columns)
         if not exists:w.writeheader()
         w.writerows(rows)
+
+def intraday_candidate_comparison(history,quotes,now=None):
+    """Point-in-time price comparison, never an executed trade or path backtest."""
+    required={'code','scan_time_utc','price'}
+    if history is None or history.empty or not required.issubset(history):return pd.DataFrame()
+    clock=pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz='UTC')
+    if clock.tzinfo is None:raise ValueError('Timezone required')
+    clock=clock.tz_convert('UTC');day=clock.tz_convert('Asia/Seoul').date()
+    data=history.copy();data['_time']=pd.to_datetime(data['scan_time_utc'],utc=True,errors='coerce')
+    data=data[(data['_time'].dt.tz_convert('Asia/Seoul').dt.date==day)&(data['_time']<=clock)]
+    if 'market' in data:data=data[data['market'].fillna('KR')!='US']
+    data=data.sort_values('_time').drop_duplicates('code',keep='first').head(50)
+    rows=[]
+    for _,signal in data.iterrows():
+        code=str(signal['code']).zfill(6);q=quotes.get(code,{}) or {}
+        stamp=pd.to_datetime(q.get('quote_received_utc'),utc=True,errors='coerce')
+        px=_safe_num(q.get('현재가'));base=_safe_num(signal['price'])
+        fresh=pd.notna(stamp) and signal['_time']<=stamp<=clock and (clock-stamp).total_seconds()<=120 and stamp.tz_convert('Asia/Seoul').date()==day
+        valid=bool(fresh and np.isfinite(px) and px>0 and np.isfinite(base) and base>0)
+        permission=signal.get('entry_permission')
+        recorded=isinstance(permission,str) and bool(permission.strip())
+        rows.append({'코드':code,'종목':signal.get('name',code),'스캔UTC':signal['scan_time_utc'],
+            '당시가격':base if base>0 else None,'조회가격':px if valid else None,
+            '가격변화%':round((px/base-1)*100,2) if valid else None,
+            '당시진입상태':permission if recorded else '미기록 · 매수 신호 여부 확인 불가',
+            '당시제한사유':signal.get('entry_reason',''),
+            '비교상태':'가격 비교 · 체결 수익 아님' if valid else '현재 시세 미확인',
+            '시세수신UTC':q.get('quote_received_utc') if valid else None})
+    return pd.DataFrame(rows)
 
 def audit_summary(history_df):
     if history_df is None or len(history_df)==0:return pd.DataFrame()
@@ -525,6 +567,7 @@ def entry_gate_reason(row):
 def current_entry_view(frame):
     out=frame.copy()
     if out.empty:return out
+    out['데이터신뢰도']=[data_confidence(r) for _,r in out.iterrows()]
     out["상태"]=[execution_permission(r,row_live_health(r)) for _,r in out.iterrows()]
     out["진입제한사유"]=[entry_gate_reason(r) for _,r in out.iterrows()]
     if kr_market_session_safe()=="CLOSED":
@@ -894,13 +937,13 @@ def refresh_top_candidates_rate_safe(df, top_n=30, batch_size=8):
     session=kr_market_session_safe()
     if session=="CLOSED":return df
     out=df.copy(); focus=out.head(min(max(int(top_n),1),len(out))).copy()
-    rotated=refresh_batch_indices(out,batch_size)
     if st.session_state.get("candidate_monitor_enabled"):
         # Keep top five REST evidence fresh while rotating the remaining request slots.
         cap=max(1,int(batch_size))
         priority=list(out.head(min(5,max(0,cap-1))).index)
-        idxs=(priority+[idx for idx in rotated if idx not in priority])[:cap]
-    else:idxs=rotated
+        remainder=out.drop(index=priority)
+        idxs=priority+refresh_batch_indices(remainder,cap-len(priority))
+    else:idxs=refresh_batch_indices(out,batch_size)
     from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=min(4,len(idxs) or 1)) as ex:
         fut={ex.submit(kis_quote,str(out.loc[idx].get("코드","")).zfill(6)):idx for idx in idxs}
@@ -3107,6 +3150,22 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
     render_holdings_review()
 
 with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
+    if st.button('오늘 최초 TOP5 가격 대조',key='intraday_compare'):
+        if AUDIT_FILE.exists():
+            history=pd.read_csv(AUDIT_FILE,dtype={'code':str})
+            initial=intraday_candidate_comparison(history,{})
+            quotes={}
+            with st.spinner('당일 최초 후보 5종목 REST 가격 대조 중'):
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    pending={executor.submit(kis_quote,code):code for code in initial.head(5).get('코드',[])}
+                    for future in as_completed(pending):
+                        try:quotes[pending[future]]=future.result() or {}
+                        except Exception:quotes[pending[future]]={}
+            st.session_state.intraday_comparison=intraday_candidate_comparison(history,quotes).head(5)
+        else:st.warning('오늘 저장된 스캔이 없습니다.')
+    if 'intraday_comparison' in st.session_state:
+        st.dataframe(st.session_state.intraday_comparison,hide_index=True,use_container_width=True)
+        st.caption('최초 후보 시점과 조회 가격의 비교 · REST 수신시각은 공급 시세시각과 다릅니다. 매수 체결·분봉 경로·비용을 검증한 수익률이 아니며, 예전 기록의 진입 상태는 추정해서 채우지 않습니다.')
     st.dataframe(deployment_self_test(),hide_index=True,use_container_width=True)
     ready_df,static_ready=release_readiness()
     st.markdown("**릴리스 준비상태**")
