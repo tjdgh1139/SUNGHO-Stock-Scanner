@@ -2814,8 +2814,11 @@ if not df.empty:
 
     with st.expander("KIS 당일 분봉",expanded=False):
         if st.button("분봉 갱신",key=f"minute_{t}",use_container_width=True):
-            minutes=kis_minute_history(t)
+            st.session_state.setdefault("minute_history_by_code",{})[t]=kis_minute_history(t)
+        minutes=st.session_state.get("minute_history_by_code",{}).get(t)
+        if minutes is not None:
             if not minutes.empty:
+                st.caption("마지막 조회 분봉 · 화면 갱신 시 유지 · 최신 자료는 분봉 갱신으로 다시 조회하세요.")
                 st.markdown("**분봉 진입·청산 조건 점검**")
                 minute_signal=minute_setup_signal(minutes)
                 st.info(f"{minute_signal['신호']} · {minute_signal['근거']}")
