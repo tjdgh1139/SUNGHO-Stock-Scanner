@@ -689,6 +689,9 @@ def dart_recent_disclosures(corp_code, days=2, max_count=20):
     if not key or not corp_code:
         diagnostics["DART_DISCLOSURES"]={"status":"NOT_CONFIGURED" if not key else "NO_MAPPING"}
         return []
+    if time.monotonic()<st.session_state.get('dart_retry_after',0):
+        diagnostics['DART_DISCLOSURES']={'status':'CONNECTION_BACKOFF','retry_in_seconds':round(st.session_state.dart_retry_after-time.monotonic(),1)}
+        return []
     try:
         end=pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y%m%d")
         begin=(pd.Timestamp.now(tz="Asia/Seoul")-pd.Timedelta(days=max(1,days))).strftime("%Y%m%d")
@@ -700,6 +703,7 @@ def dart_recent_disclosures(corp_code, days=2, max_count=20):
         diagnostics["DART_DISCLOSURES"]={"status":"PASS" if status=="000" else "NO_DISCLOSURES" if status=="013" else "API_ERROR",
             "api_status":status,"조회시작":begin,"조회종료":end,"건수":len(payload.get("list",[]) or [])}
         if status not in ("000","013"):return []
+        st.session_state.dart_retry_after=0
         st.session_state.dart_live_verified=True
         out=[]
         for x in payload.get("list",[]) or []:
@@ -707,6 +711,8 @@ def dart_recent_disclosures(corp_code, days=2, max_count=20):
                         "date":x.get("rcept_dt",""),"receipt":x.get("rcept_no","")})
         return out
     except Exception as exc:
+        if isinstance(exc,(requests.exceptions.Timeout,requests.exceptions.ConnectionError)):
+            st.session_state.dart_retry_after=time.monotonic()+30
         diagnostics["DART_DISCLOSURES"]={"status":"REQUEST_ERROR","error_type":type(exc).__name__}
         return []
 
@@ -755,7 +761,9 @@ def cached_dart_disclosures(stock_code, days=2, ttl_seconds=300):
     key=(code,int(days))
     now=time.time()
     hit=_DART_CACHE.get(key)
-    if hit and now-hit["time"]<ttl_seconds:return hit["data"]
+    # Transient connection/API failures must not suppress retry for five minutes.
+    cache_ttl=min(ttl_seconds,30) if hit and hit.get('status') not in ('PASS','NO_DISCLOSURES') else ttl_seconds
+    if hit and now-hit["time"]<cache_ttl:return hit["data"]
     data=dart_recent_disclosures(corp,days=days,max_count=20)
     status=st.session_state.get("feed_diagnostics",{}).get("DART_DISCLOSURES",{}).get("status","UNKNOWN")
     _DART_CACHE[key]={"time":now,"data":data,"status":status}
@@ -1074,13 +1082,21 @@ def refresh_news_candidates(frame,top_n=10,ttl=300):
     _NEWS_CACHE=manual+[x for hit in cache.values() for x in hit.get("items",[])]
     st.session_state.news_cache=_NEWS_CACHE
 
+@st.cache_data(ttl=900,show_spinner=False)
+def technical_base_history(code,start,end):
+    """Reuse history during reranking; fresh quotes are overlaid on a copy."""
+    history=prices(code,start,end)
+    if history is None or len(history)<65:raise ValueError('Insufficient technical history')
+    return history.copy()
+
 def refresh_technical_rows(frame,indices):
     out=frame.copy()
     end=business_day();start=end-dt.timedelta(days=240)
     for idx in indices:
         row=out.loc[idx].to_dict()
         if data_confidence(row)=="DAILY/DELAYED":continue
-        history=prices(row.get("코드"),start.isoformat(),end.isoformat())
+        try:history=technical_base_history(row.get("코드"),start.isoformat(),end.isoformat())
+        except Exception:continue
         if history is not None and not history.empty and not row.get("market_date"):
             row["market_date"]=pd.Timestamp(history.index[-1]).strftime("%Y%m%d")
         updated=overlay_quote(history,row)
@@ -1467,14 +1483,16 @@ def kis_market_code():
     value=secret_value("KIS_MARKET_DIV_CODE") or "UN"
     return value if value in ("J","NX","UN") else "UN"
 
-def kis_quote(code):
+def kis_quote(code,market=None):
     if not kis_configured():
         return None
     try:
         appkey=st.secrets["KIS_APP_KEY"]
         appsecret=st.secrets["KIS_APP_SECRET"]
         headers={"appkey":appkey,"appsecret":appsecret,"tr_id":"FHKST01010100","custtype":"P"}
-        params={"FID_COND_MRKT_DIV_CODE":kis_market_code(),"FID_INPUT_ISCD":str(code).zfill(6)}
+        quote_market=kis_market_code() if market is None else market
+        if quote_market not in ('J','NX','UN'):return None
+        params={"FID_COND_MRKT_DIV_CODE":quote_market,"FID_INPUT_ISCD":str(code).zfill(6)}
         r=kis_get(
             "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price",
             headers,params,appkey,appsecret,timeout=8)
@@ -1487,10 +1505,31 @@ def kis_quote(code):
         chg=float(o.get("prdy_ctrt") or 0)
         return {"현재가":px,"장중등락%":chg,"장중거래량":vol,"장중거래대금":val,"quote_received_utc":pd.Timestamp.now(tz="UTC").isoformat(),"rest_received_utc":pd.Timestamp.now(tz="UTC").isoformat(),
                 "장중시가":_safe_num(o.get("stck_oprc")),"장중고가":_safe_num(o.get("stck_hgpr")),"장중저가":_safe_num(o.get("stck_lwpr")),
+                "하한가":_safe_num(o.get("stck_llam")) or None,"상한가":_safe_num(o.get("stck_mxpr")) or None,
+                "기준가":_safe_num(o.get("stck_sdpr")) or None,"조회시장":quote_market,
                 "market_date":o.get("stck_bsop_date", "")}
     except Exception:
         return None
 
+
+def holdings_quote_probe(holdings):
+    """Compare read-only REST routes; missing data never becomes a live trade."""
+    rows=[]
+    if holdings is None or holdings.empty or '코드' not in holdings:return pd.DataFrame()
+    codes=list(dict.fromkeys(holdings['코드'].astype(str).str.zfill(6)))[:5]
+    for code in codes:
+        for market,label in [('J','KRX'),('UN','통합')]:
+            try:q=kis_quote(code,market=market)
+            except Exception:q=None
+            q=q or {};price=_safe_num(q.get('현재가'))
+            valid=bool(np.isfinite(price) and price>0)
+            rows.append({'코드':code,'조회시장':label,'REST상태':'가격 수신' if valid else '미수신·가격 오류',
+                         'REST현재가':price if valid else None,
+                         '하한가':q.get('하한가') if valid else None,'상한가':q.get('상한가') if valid else None,
+                         '기준가':q.get('기준가') if valid else None,
+                         '시세기준일':q.get('market_date') or '미제공',
+                         'REST수신UTC':q.get('quote_received_utc') or '미수신'})
+    return pd.DataFrame(rows)
 
 def kis_chart_response(code,path,tr_id,params):
     if not kis_configured():return {}
@@ -2637,13 +2676,22 @@ if auto_live and not st.session_state.get("watch_candidates",st.session_state.sc
         if session_now!="CLOSED":
             from streamlit_autorefresh import st_autorefresh
             st_autorefresh(interval=int(refresh_sec*1000),key="sungho_live_refresh")
-            watch=st.session_state.get("watch_candidates",st.session_state.scan)
-            watch=refresh_top_candidates_rate_safe(watch,focus_n,refresh_batch)
-            st.session_state.watch_candidates=watch
-            st.session_state.scan=watch[(watch["점수"]>=min_score)&(watch["거래대금"]>=min_value_eok*100_000_000)].copy()
-            st.session_state.last_live_refresh=dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
-    except Exception:
-        pass
+            attempt=time.monotonic()
+            if attempt-st.session_state.get('last_auto_refresh_attempt',-1e12)>=refresh_sec:
+                st.session_state.last_auto_refresh_attempt=attempt
+                watch=st.session_state.get("watch_candidates",st.session_state.scan)
+                watch=refresh_top_candidates_rate_safe(watch,focus_n,refresh_batch)
+                st.session_state.watch_candidates=watch
+                st.session_state.scan=watch[(watch["점수"]>=min_score)&(watch["거래대금"]>=min_value_eok*100_000_000)].copy()
+                st.session_state.last_live_refresh=dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+                st.session_state.last_auto_refresh_seconds=round(time.monotonic()-attempt,1)
+                st.session_state.last_auto_refresh_error=''
+    except Exception as exc:
+        st.session_state.last_auto_refresh_error=type(exc).__name__
+if st.session_state.get('last_auto_refresh_error'):
+    st.warning('자동 재평가 실패 · '+st.session_state.last_auto_refresh_error+' · 기존 자료의 수신시각을 확인하세요.')
+if st.session_state.get('last_auto_refresh_seconds',0)>refresh_sec:
+    st.caption(f"최근 재평가 소요 {st.session_state.last_auto_refresh_seconds:.1f}초 · 설정 주기 {refresh_sec}초보다 지연됨")
 
 scan_action,cache_action=st.columns([3,1])
 if cache_action.button("캐시 초기화", use_container_width=True):
@@ -3009,6 +3057,21 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
     if stop_holdings.button("감시 중지",key="holding_monitor_stop",use_container_width=True):
         st.session_state.candidate_monitor_enabled=False
         live_tape().stop()
+    with st.expander("보유종목 연결 비교 진단 · KRX / 통합",expanded=False):
+        if st.button("보유종목 REST 연결 비교",key="holdings_quote_probe"):
+            with st.spinner("KRX·통합 가격과 가격제한폭 비교 중"):
+                st.session_state.holdings_quote_probe_result=holdings_quote_probe(st.session_state.holdings)
+        if "holdings_quote_probe_result" in st.session_state:
+            st.dataframe(st.session_state.holdings_quote_probe_result,hide_index=True,use_container_width=True,
+                column_config={c:st.column_config.NumberColumn(c,format="%,.0f원") for c in ['REST현재가','하한가','상한가','기준가']})
+        ws_rows=[]
+        for code in st.session_state.holdings.get('코드',[]):
+            data,connected,error=live_tape().snapshot(str(code).zfill(6))
+            ws_rows.append({'코드':str(code).zfill(6),'소켓연결':connected,
+                **{label:('30초 이내 수신' if timestamp_fresh(data.get(field),seconds=30) else '미수신·30초 초과')
+                   for label,field in [('체결','trade_received_utc'),('호가','book_received_utc'),('프로그램','program_received_utc')]}})
+        if ws_rows:st.dataframe(pd.DataFrame(ws_rows),hide_index=True,use_container_width=True)
+        st.caption("REST 응답과 실제 체결은 별도입니다. 수신시각은 시세 기준시각이 아니며, 미수신을 거래정지로 단정하지 않습니다. 이 진단은 감시 시장·매매 판단을 자동 변경하지 않습니다.")
     st.download_button("보유종목 CSV 백업",st.session_state.holdings.to_csv(index=False).encode("utf-8-sig"),"holdings.csv","text/csv")
     restored=st.file_uploader("보유종목 CSV 복원",type=["csv"],key="holdings_restore")
     if restored is not None and st.button("복원 내용을 입력표로 불러오기"):
