@@ -89,7 +89,7 @@ def colored_quote(label,value,change):
 def candidate_formats(frame,currency="KRW"):
     formats={}
     for c in frame.columns:
-        if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표","평단","익절가","평가손익"):
+        if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표","평단","익절가","평가손익","마지막확인체결가"):
             formats[c]="%,.0f원" if currency=="KRW" else "$%,.2f"
         elif "%" in c or c=="등락률":formats[c]="%+.2f%%"
         elif "손익비" in c:formats[c]="%.2f"
@@ -99,7 +99,7 @@ def candidate_formats(frame,currency="KRW"):
 def styled_candidate_table(frame,currency="KRW"):
     # One format call: later Styler.format calls otherwise reset earlier columns.
     formats={c:("{:,.0f}원" if currency=="KRW" else "${:,.2f}") for c in frame.columns
-             if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표","평단","익절가","평가손익")}
+             if c in ("현재가","종가","매수하단","매수상단","돌파확인가","손절가","1차목표","2차목표","진입검토목표","평단","익절가","평가손익","마지막확인체결가")}
     formats.update({c:"{:+.2f}%" for c in frame.columns if "%" in c or c=="등락률"})
     formats.update({c:"{:.1f}" for c in frame.columns if "점수" in c or c in ("거래량x","RSI")})
     formats.update({c:"{:.2f}" for c in frame.columns if "손익비" in c})
@@ -527,12 +527,15 @@ def holding_review(position, quote, plan=None):
     qty=_safe_num(position.get("수량"));avg=_safe_num(position.get("평단"))
     px=_safe_num(quote.get("현재가"))
     stop=_safe_num(position.get("손절가"));target=_safe_num(position.get("익절가"))
-    fresh=timestamp_fresh(quote.get("trade_received_utc"),seconds=30) and px>0
+    trade_stamp=pd.to_datetime(quote.get('trade_received_utc'),utc=True,errors='coerce')
+    known_trade=bool(pd.notna(trade_stamp) and trade_stamp<=pd.Timestamp.now(tz='UTC') and np.isfinite(px) and px>0)
+    fresh=known_trade and timestamp_fresh(quote.get("trade_received_utc"),seconds=30)
     out={"코드":position.get("코드"),"종목":position.get("종목"),"수량":qty,"평단":avg,
          "현재가":px if fresh else None,"평가손익":round((px-avg)*qty,2) if fresh and avg>0 else None,
          "수익률%":round((px/avg-1)*100,2) if fresh and avg>0 else None,
          "손절가":stop,"익절가":target,"체결시각":quote.get("체결시간","미수신"),
-         "수신상태":"30초 이내 실제 체결" if fresh else "체결 미수신·30초 초과·가격 오류",
+         "마지막확인체결가":px if known_trade else None,"체결수신UTC":quote.get('trade_received_utc') if known_trade else None,
+         "수신상태":"30초 이내 실제 체결" if fresh else "이전 체결 · 30초 초과" if known_trade else "체결 미수신·시각/가격 오류",
          "호가수신":"확인" if timestamp_fresh(quote.get("book_received_utc"),30) else "미확인",
          "프로그램수신":"확인" if timestamp_fresh(quote.get("program_received_utc"),120) else "미확인",
          "의견":"판단 보류","근거":"실제 체결 시각 확인 필요"}
@@ -1539,7 +1542,8 @@ def kis_market_code():
     return value if value in ("J","NX","UN") else "UN"
 
 def equity_ws_market():
-    value=st.session_state.get('equity_ws_market',kis_market_code())
+    value=st.session_state.get('equity_ws_market','AUTO')
+    if value=='AUTO':return 'J' if kr_market_session_safe()=='REGULAR' else kis_market_code()
     return value if value in ('J','NX','UN') else kis_market_code()
 
 def kis_quote(code,market=None):
@@ -3139,25 +3143,28 @@ with st.expander("💼 보유종목 관리", expanded=not st.session_state.get("
         st.session_state.candidate_monitor_enabled=False
         live_tape().stop()
     with st.expander("보유종목 연결 비교 진단 · KRX / 통합",expanded=False):
-        market_labels={'UN':'통합 시세','J':'KRX 시세','NX':'NXT 시세'}
-        st.selectbox('실시간 체결 수신 시장',['UN','J','NX'],index=['UN','J','NX'].index(kis_market_code()),format_func=lambda code:market_labels[code],key='equity_ws_market')
-        st.caption('WebSocket 수신 경로 선택 · REST 설정과 별도 · 다음 감시 갱신에 적용됩니다. NXT 미대상 종목은 NXT 데이터가 없을 수 있습니다.')
+        market_labels={'AUTO':'자동 · 정규장 KRX / 그 외 설정시장','UN':'통합 시세','J':'KRX 시세','NX':'NXT 시세'}
+        st.selectbox('실시간 체결 수신 시장',list(market_labels),index=0,format_func=lambda code:market_labels[code],key='equity_ws_market')
+        st.caption('자동 모드: 정규장은 KRX, 장전·장후는 기존 설정시장 · REST 설정과 별도 · 다음 감시 갱신에 적용됩니다. NXT 미대상 종목은 NXT 데이터가 없을 수 있습니다.')
         if st.button("보유종목 REST 연결 비교",key="holdings_quote_probe"):
             with st.spinner("KRX·통합 가격과 가격제한폭 비교 중"):
                 st.session_state.holdings_quote_probe_result=holdings_quote_probe(st.session_state.holdings)
         if "holdings_quote_probe_result" in st.session_state:
             st.dataframe(st.session_state.holdings_quote_probe_result,hide_index=True,use_container_width=True,
                 column_config={c:st.column_config.NumberColumn(c,format="%,.0f원") for c in ['REST현재가','하한가','상한가','기준가']})
-        ws_rows=[]
-        symbol_responses=live_tape().diagnostics().get('symbol_responses',{})
-        for code in st.session_state.holdings.get('코드',[]):
-            data,connected,error=live_tape().snapshot(str(code).zfill(6))
-            responses=symbol_responses.get(str(code).zfill(6),{})
-            ws_rows.append({'코드':str(code).zfill(6),'소켓연결':connected,
-                '구독응답':' / '.join(channel+': '+receipt['status']+' '+receipt['response_code'] for channel,receipt in responses.items()) or '종목별 응답 미확인',
-                **{label:('30초 이내 수신' if timestamp_fresh(data.get(field),seconds=30) else '미수신·30초 초과')
-                   for label,field in [('체결','trade_received_utc'),('호가','book_received_utc'),('프로그램','program_received_utc')]}})
-        if ws_rows:st.dataframe(pd.DataFrame(ws_rows),hide_index=True,use_container_width=True)
+        @st.fragment(run_every="2s")
+        def render_symbol_connections():
+            ws_rows=[]
+            symbol_responses=live_tape().diagnostics().get('symbol_responses',{})
+            for code in st.session_state.holdings.get('코드',[]):
+                data,connected,error=live_tape().snapshot(str(code).zfill(6))
+                responses=symbol_responses.get(str(code).zfill(6),{})
+                ws_rows.append({'코드':str(code).zfill(6),'소켓연결':connected,
+                    '구독응답':' / '.join(channel+': '+receipt['status']+' '+receipt['response_code'] for channel,receipt in responses.items()) or '종목별 응답 미확인',
+                    **{label:('30초 이내 수신' if timestamp_fresh(data.get(field),seconds=30) else '미수신·30초 초과')
+                       for label,field in [('체결','trade_received_utc'),('호가','book_received_utc'),('프로그램','program_received_utc')]}})
+            if ws_rows:st.dataframe(pd.DataFrame(ws_rows),hide_index=True,use_container_width=True)
+        render_symbol_connections()
         st.caption("REST 응답과 실제 체결은 별도입니다. 수신시각은 시세 기준시각이 아니며, 미수신을 거래정지로 단정하지 않습니다. 이 진단은 감시 시장·매매 판단을 자동 변경하지 않습니다.")
     st.download_button("보유종목 CSV 백업",st.session_state.holdings.to_csv(index=False).encode("utf-8-sig"),"holdings.csv","text/csv")
     restored=st.file_uploader("보유종목 CSV 복원",type=["csv"],key="holdings_restore")
