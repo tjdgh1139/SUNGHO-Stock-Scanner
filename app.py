@@ -3138,21 +3138,31 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
         if AUDIT_FILE.exists():
             history=pd.read_csv(AUDIT_FILE,dtype={"code":str})
             histories={}
-            for code in history["code"].dropna().unique()[:50]:
+            codes=history["code"].dropna().unique()[:50]
+            performance_progress=st.empty()
+            for number,code in enumerate(codes,1):
+                performance_progress.info(f"저장 신호 평가 · {number}/{len(codes)}종목 가격 이력 조회 중")
                 signals=history[history["code"]==code]
                 begin=pd.to_datetime(signals["scan_time_utc"],utc=True).min().date()
                 histories[str(code).zfill(6)]=prices(str(code).zfill(6),begin.isoformat(),market_date().isoformat())
+            performance_progress.empty()
             evaluated=evaluate_snapshots(history,histories)
             evaluated["signal_day"]=pd.to_datetime(evaluated["scan_time_utc"],utc=True).dt.tz_convert("Asia/Seoul").dt.date.astype(str)
             evaluated=evaluated.drop_duplicates(["code","signal_day"],keep="first")
             summary=audit_summary(evaluated)
-            st.session_state.performance_verified=(len(evaluated.get("d5_ret",pd.Series(dtype=float)).dropna())>=30)
+            # Daily hypothetical outcomes do not attest to live intraday execution.
+            st.session_state.performance_verified=False
             st.session_state.performance_verified_build=build_id()
-            st.dataframe(summary,use_container_width=True)
-            st.download_button("검증 성적 CSV",evaluated.to_csv(index=False).encode("utf-8-sig"),file_name="evaluated_signals.csv")
-            st.caption("신호 다음 거래일부터 평가 · 비용 20bp · 같은 일봉에서 손절/목표 모두 도달하면 손절 우선. 일봉 근사이며 체결 수익이 아닙니다.")
+            st.session_state.daily_performance_result={"evaluated":evaluated,"summary":summary,"build":build_id()}
         else:
             st.warning("검증할 저장 신호가 없습니다.")
+    if "daily_performance_result" in st.session_state:
+        result=st.session_state.daily_performance_result
+        st.caption("마지막 일봉 평가 · 계산 빌드 "+result["build"])
+        st.dataframe(result["summary"],use_container_width=True)
+        st.download_button("검증 성적 CSV",result["evaluated"].to_csv(index=False).encode("utf-8-sig"),file_name="evaluated_signals.csv")
+        st.caption("신호 다음 거래일부터 평가 · 비용 20bp · 같은 일봉에서 손절/목표 모두 도달하면 손절 우선. 일봉 근사이며 체결 수익이 아닙니다.")
+        st.info("일봉 평가 결과는 장중 매수·매도 성적검증 통과 증거로 사용하지 않습니다. 미결·자료 부족은 검증 완료로 처리하지 않습니다.")
     historical_code=st.text_input("과거 검증 종목코드",value="005930",key="historical_code")
     if st.button("과거 일봉 워크포워드 검증",use_container_width=True):
         from performance import walk_forward
