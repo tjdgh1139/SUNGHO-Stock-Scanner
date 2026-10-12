@@ -17,6 +17,8 @@ import html
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import importlib
+import io
+import zipfile
 import feeds as _feeds
 # Streamlit reruns may retain the previous module after a two-file deployment.
 if not hasattr(_feeds,"public_news"):
@@ -1300,9 +1302,56 @@ def atr(df, period=14):
     return tr.rolling(period).mean()
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def kis_master_listing():
+    frames=[];sources={}
+    for market,stem in (("KOSPI","kospi_code"),("KOSDAQ","kosdaq_code")):
+        response=requests.get(f"https://new.real.download.dws.co.kr/common/master/{stem}.mst.zip",timeout=12)
+        response.raise_for_status()
+        if len(response.content)>5_000_000:raise ValueError("Master archive too large")
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            member=archive.getinfo(stem+".mst")
+            if member.file_size>20_000_000:raise ValueError("Master file too large")
+            frame=parse_kis_stock_master(archive.read(member).decode("cp949"),market)
+        if frame.empty:raise ValueError("Empty KIS stock master")
+        frames.append(frame);sources[market]=response.headers.get("Last-Modified","미제공")
+    result=pd.concat(frames,ignore_index=True)
+    result.attrs.update(listing_source="KIS_MASTER",master_modified=sources,
+        master_received_utc=pd.Timestamp.now(tz="UTC").isoformat())
+    return result
+
+def parse_kis_stock_master(text,market):
+    # Fixed-width definitions from KIS official stocks_info examples. No disk
+    # extraction, TLS bypass, credentials, or fabricated market-cap ordering.
+    if market=="KOSPI":
+        tail_size=228
+        widths=[2,1,4,4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,9,5,5,1,1,1,2,1,1,1,2,2,2,3,1,3,12,12,8,15,21,2,7,1,1,1,1,1,9,9,9,5,9,8,9,3,1,1,1]
+        cap_index=65;guard_indices=(34,35,36)
+    elif market=="KOSDAQ":
+        tail_size=222
+        widths=[2,1,4,4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,9,5,5,1,1,1,2,1,1,1,2,2,2,3,1,3,12,12,8,15,21,2,7,1,1,1,1,9,9,9,5,9,8,9,3,1,1,1]
+        cap_index=59;guard_indices=(29,30,31)
+    else:raise ValueError("Unsupported master market")
+    rows=[]
+    for raw in text.splitlines():
+        row=raw+"\n"
+        if len(row)<=tail_size+21:continue
+        prefix=row[:-tail_size];tail=row[-tail_size:-1]
+        code=prefix[:9].strip();isin=prefix[9:21];name=prefix[21:].strip()
+        if len(code)!=6 or not code.isdigit() or len(isin)!=12 or not isin.startswith("KR") or not name:continue
+        fields=[];offset=0
+        for width in widths:fields.append(tail[offset:offset+width].strip());offset+=width
+        if fields[0]!="ST" or any(fields[i]=="Y" for i in guard_indices):continue
+        cap=_safe_num(fields[cap_index])
+        rows.append({"Code":code,"Name":name,"Market":market,"Marcap":cap*100_000_000 if np.isfinite(cap) and cap>0 else 0})
+    return pd.DataFrame(rows,columns=["Code","Name","Market","Marcap"]).drop_duplicates("Code")
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def validated_listing():
     # Exceptions are not cached by Streamlit. Never cache an empty failure for
     # an hour, otherwise transient listing errors disable subsequent scans.
+    if kis_configured():
+        try:return kis_master_listing()
+        except Exception:pass
     if fdr is None:raise RuntimeError("FinanceDataReader unavailable")
     for source in ("KRX","KRX-DESC"):
         try:
@@ -1315,7 +1364,7 @@ def validated_listing():
             df.attrs["listing_source"]=source
             return df
         except Exception:continue
-    raise ValueError("Both KRX listing sources failed")
+    return kis_master_listing()
 
 def listing():
     try:
@@ -1940,6 +1989,8 @@ def run_scan(markets, per_market, min_value, min_score):
         raise RuntimeError("종목 목록 조회 실패입니다. 보유종목 감시는 별도로 사용 가능하며 다음 스캔에서 목록을 다시 요청합니다.")
     if ls.attrs.get("listing_source")=="KRX-DESC":
         st.warning("종목 목록 대체 경로 사용 · 목록 기준시각 및 시가총액순 정렬 미확인. 이후 시세는 별도 조회합니다.")
+    elif ls.attrs.get("listing_source")=="KIS_MASTER":
+        st.caption("한국투자증권 공식 마스터 종목 목록 사용 · 마스터 시가총액 기준 정렬 · 현재가/호가/체결 시각은 별도 확인")
 
     # Normalize market column and keep selected markets.
     market_col = "Market" if "Market" in ls.columns else None
