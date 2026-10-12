@@ -1300,17 +1300,30 @@ def atr(df, period=14):
     return tr.rolling(period).mean()
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def validated_listing():
+    # Exceptions are not cached by Streamlit. Never cache an empty failure for
+    # an hour, otherwise transient listing errors disable subsequent scans.
+    if fdr is None:raise RuntimeError("FinanceDataReader unavailable")
+    for source in ("KRX","KRX-DESC"):
+        try:
+            df=fdr.StockListing(source).copy()
+            if "Code" not in df.columns and "Symbol" in df.columns:df=df.rename(columns={"Symbol":"Code"})
+            if df.empty or not {"Code","Name","Market"}.issubset(df.columns):raise ValueError("Invalid KRX listing")
+            df["Code"]=df["Code"].astype(str).str.zfill(6)
+            df=df[df["Code"].str.fullmatch(r"\d{6}") & df["Name"].notna()].copy()
+            if df.empty:raise ValueError("No valid KRX codes")
+            df.attrs["listing_source"]=source
+            return df
+        except Exception:continue
+    raise ValueError("Both KRX listing sources failed")
+
 def listing():
-    if fdr is None:
-        return pd.DataFrame()
     try:
-        df=fdr.StockListing("KRX").copy()
-        if "Code" not in df.columns and "Symbol" in df.columns:
-            df=df.rename(columns={"Symbol":"Code"})
-        if "Name" not in df.columns and "Name" not in df:
-            return pd.DataFrame()
-        return df
-    except Exception:
+        frame=validated_listing()
+        st.session_state.listing_status="종목 목록 수신 · "+frame.attrs.get("listing_source","KRX")
+        return frame
+    except Exception as error:
+        st.session_state.listing_status="종목 목록 조회 실패 · 다음 스캔에서 재시도 · "+type(error).__name__
         return pd.DataFrame()
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -1924,7 +1937,9 @@ def run_scan(markets, per_market, min_value, min_score):
     start=end-dt.timedelta(days=180)
     ls=listing()
     if ls.empty:
-        raise RuntimeError("FinanceDataReader 종목 목록을 불러오지 못했습니다.")
+        raise RuntimeError("종목 목록 조회 실패입니다. 보유종목 감시는 별도로 사용 가능하며 다음 스캔에서 목록을 다시 요청합니다.")
+    if ls.attrs.get("listing_source")=="KRX-DESC":
+        st.warning("종목 목록 대체 경로 사용 · 목록 기준시각 및 시가총액순 정렬 미확인. 이후 시세는 별도 조회합니다.")
 
     # Normalize market column and keep selected markets.
     market_col = "Market" if "Market" in ls.columns else None
@@ -2169,6 +2184,7 @@ def minute_setup_signal(history,now=None):
     clock=pd.Timestamp.now(tz="Asia/Seoul") if now is None else pd.Timestamp(now)
     if clock.tzinfo is None:return wait("현재 시각 시간대 미확인")
     clock=clock.tz_convert("Asia/Seoul")
+    if kr_market_session_safe(clock)!="REGULAR":return wait("정규장 외 · 분봉 신규진입 판단 보류")
     if not isinstance(history.index,pd.DatetimeIndex):return wait("분봉 시각 형식 미확인")
     bars=history[required].copy()
     bars.index=bars.index.tz_localize("Asia/Seoul") if bars.index.tz is None else bars.index.tz_convert("Asia/Seoul")
@@ -2188,18 +2204,77 @@ def minute_setup_signal(history,now=None):
     if total_volume<=0 or baseline<=0 or latest["거래량"]<=0:return wait("거래량 확인 불가")
     typical=(bars["고가"]+bars["저가"]+bars["종가"])/3
     window_vwap=float((typical*bars["거래량"]).sum()/total_volume)
+    previous_vwap=float((typical.iloc[:-1]*previous["거래량"]).sum()/previous["거래량"].sum())
     upper=float(previous["고가"].max());lower=float(previous["저가"].min())
     close=float(latest["종가"]);volume_ratio=float(latest["거래량"]/baseline)
     ma5=float(bars["종가"].tail(5).mean());ma20=float(bars["종가"].tail(20).mean())
     trend=ma5>ma20 and ma5>float(previous["종가"].tail(5).mean())
     breakout=close>upper and close>window_vwap and trend and volume_ratio>=1.5
     overextended=(close/upper-1)>0.02
-    breakdown=close<lower or (float(previous.iloc[-1]["종가"])>=window_vwap and close<window_vwap and ma5<ma20 and volume_ratio>=1.5)
+    breakdown=close<lower or (float(previous.iloc[-1]["종가"])>=previous_vwap and close<window_vwap and ma5<ma20 and volume_ratio>=1.5)
     signal="청산 검토" if breakdown else "진입 검토" if breakout and not overextended else "대기"
     reason="박스 이탈 또는 VWAP·추세 약화" if breakdown else "박스 돌파·구간 VWAP·추세·거래량 확인" if breakout and not overextended else "돌파 후 2% 초과 추격 구간" if breakout else "돌파 확인 조건 미충족"
+    levels={}
+    if signal=="진입 검토":
+        prev_close=bars["종가"].shift(1)
+        true_range=pd.concat([bars["고가"]-bars["저가"],(bars["고가"]-prev_close).abs(),(bars["저가"]-prev_close).abs()],axis=1).max(axis=1)
+        atr=float(true_range.tail(14).mean())
+        stop=float(bars["저가"].tail(5).min())-0.25*atr
+        risk=close-stop
+        if not 0<stop<close or risk/close>0.02:
+            signal="대기";reason="구조적 손절 폭 2% 초과 또는 손절 기준 오류"
+        else:
+            levels={"기준가격":close,"손절기준":stop,"1차목표":close+2*risk,"2차목표":close+3*risk,
+                "손절폭%":round(risk/close*100,2),"1차손익비_비용전":2.0,
+                "가격조건":"완료 분봉 종가 기준 시나리오 · 목표 도달 예측 아님 · 실제 호가/수수료/세금/슬리피지 별도"}
     return {"신호":signal,"근거":reason,"박스상단":upper,"박스하단":lower,"구간VWAP":window_vwap,
         "거래량배수":round(volume_ratio,2),"기준분봉":bars.index[-1].isoformat(),"자동주문허용":False,
-        "검증범위":"최근 완료 21분봉 기술 조건 · 당일 전체 VWAP 아님 · 수급/뉴스/호가/성과 검증 별도"}
+        "검증범위":"최근 완료 21분봉 기술 조건 · 당일 전체 VWAP 아님 · 수급/뉴스/호가/성과 검증 별도",**levels}
+
+def replay_minute_setups(history,cost_bps=20):
+    """Historical simulation, next-bar entry, stop first on ambiguous bars.
+
+    Cost is a configurable assumption, not a broker fee/tax quote.
+    """
+    if not np.isfinite(cost_bps) or cost_bps<0:raise ValueError("Invalid cost assumption")
+    if history is None or len(history)<22:return pd.DataFrame()
+    if not isinstance(history.index,pd.DatetimeIndex) or history.index.has_duplicates or history.index.hasnans:return pd.DataFrame()
+    columns=["시가","고가","저가","종가","거래량"]
+    if any(c not in history for c in columns):return pd.DataFrame()
+    bars=history[columns].copy().sort_index().apply(pd.to_numeric,errors="coerce")
+    if bars.isna().any().any() or not np.isfinite(bars.to_numpy()).all():return pd.DataFrame()
+    if (bars[columns[:4]]<=0).any().any() or (bars["거래량"]<0).any():return pd.DataFrame()
+    if ((bars["고가"]<bars[["시가","종가","저가"]].max(axis=1)) | (bars["저가"]>bars[["시가","종가"]].min(axis=1))).any():return pd.DataFrame()
+    bars.index=bars.index.tz_localize("Asia/Seoul") if bars.index.tz is None else bars.index.tz_convert("Asia/Seoul")
+    rows=[];cursor=20
+    while cursor<len(bars)-1:
+        stamp=bars.index[cursor]
+        signal=minute_setup_signal(bars.iloc[:cursor+1],stamp+pd.Timedelta(minutes=1))
+        if signal["신호"]!="진입 검토":cursor+=1;continue
+        next_stamp=bars.index[cursor+1]
+        if next_stamp-stamp!=pd.Timedelta(minutes=1) or next_stamp.date()!=stamp.date():cursor+=1;continue
+        entry=float(bars.iloc[cursor+1]["시가"]);stop=signal["손절기준"];target=signal["1차목표"]
+        # A gap that consumes the setup or materially increases stop risk is skipped.
+        if not stop<entry<target or (entry-stop)/entry>0.02:cursor+=1;continue
+        outcome="미결 · 평가손익";exit_price=None;exit_stamp=None;exit_idx=cursor+1
+        for j in range(cursor+1,len(bars)):
+            if bars.index[j].date()!=stamp.date():break
+            if j>cursor+1 and bars.index[j]-bars.index[j-1]!=pd.Timedelta(minutes=1):
+                outcome="자료 공백 · 평가손익";break
+            bar=bars.iloc[j];exit_idx=j;exit_stamp=bars.index[j]
+            opening=float(bar["시가"])
+            if opening<=stop:exit_price=opening;outcome="손절 갭";break
+            if opening>=target:exit_price=opening;outcome="목표 갭";break
+            if bar["저가"]<=stop:exit_price=stop;outcome="손절 · 동시도달 시 손절 우선";break
+            if bar["고가"]>=target:exit_price=target;outcome="1차목표";break
+            exit_price=float(bar["종가"])
+        if exit_price is None:cursor+=1;continue
+        rows.append({"신호시각":stamp.isoformat(),"가정진입시각":next_stamp.isoformat(),"가정진입가":entry,
+            "손절기준":stop,"1차목표":target,"결과":outcome,"평가시각":exit_stamp.isoformat(),
+            "가정청산_평가가격":exit_price,"비용가정bps":cost_bps,
+            "비용차감수익률%":(exit_price/entry-1)*100-cost_bps/100})
+        cursor=exit_idx+1
+    return pd.DataFrame(rows)
 
 def us_book_connection_probe():
     # A control sample helps distinguish candidate-specific empty books from a
@@ -2691,7 +2766,22 @@ if not df.empty:
             minutes=kis_minute_history(t)
             if not minutes.empty:
                 st.markdown("**분봉 진입·청산 조건 점검**")
-                st.json(minute_setup_signal(minutes))
+                minute_signal=minute_setup_signal(minutes)
+                st.info(f"{minute_signal['신호']} · {minute_signal['근거']}")
+                if "손절기준" in minute_signal:
+                    level_columns=st.columns(4)
+                    for column,field in zip(level_columns,("기준가격","손절기준","1차목표","2차목표")):
+                        column.metric(field,f"{minute_signal[field]:,.0f}원")
+                    st.caption(f"손절 폭 {minute_signal['손절폭%']:.2f}% · 1차 손익비 2:1 (비용 전) · {minute_signal['가격조건']}")
+                with st.expander("분봉 신호 계산 근거",expanded=False):st.json(minute_signal)
+                with st.expander("수신 분봉 과거 신호 재검증",expanded=False):
+                    replay=replay_minute_setups(minutes)
+                    st.caption("최근 수신 분봉만 재생 · 다음 봉 시가 진입 가정 · 동시 손절/목표 도달은 손절 우선 · 왕복 비용 20bps 가정. 실제 체결·전체 거래일 성과가 아닙니다.")
+                    if replay.empty:st.info("이 구간에서 검증 가능한 진입 신호가 없습니다. 수익률 0% 또는 성공으로 처리하지 않습니다.")
+                    else:
+                        st.dataframe(replay,hide_index=True,use_container_width=True)
+                        st.download_button("분봉 검증 내역 저장",replay.to_csv(index=False).encode("utf-8-sig"),
+                            f"minute_replay_{t}.csv","text/csv",key=f"minute_replay_csv_{t}")
                 st.caption("기술 조건 진입 검토는 매수 확정이 아닙니다. 현재 호가·수급·뉴스와 기존 진입 제한을 함께 확인하세요.")
                 chart=decorate_chart(minutes)
                 st.plotly_chart(candle_chart(chart,title=f"{label} 당일 분봉",minute=True),
