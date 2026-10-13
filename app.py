@@ -3229,7 +3229,7 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
         tape=live_tape()
         tape_data,tape_connected,tape_error=tape.snapshot()
         diagnostics=tape.diagnostics()
-        st.caption("WS 소켓: "+str(tape_connected)+" · 수신 체결/호가/프로그램: "+str([bool(tape_data.get(k)) for k in ["trade_received_utc","book_received_utc","program_received_utc"]]))
+        st.caption("WS 소켓: "+str(tape_connected)+" · 최근 30초 수신 체결/호가/프로그램: "+str([timestamp_fresh(tape_data.get(k),seconds=30) for k in ["trade_received_utc","book_received_utc","program_received_utc"]]))
         st.caption("구독승인: "+str(diagnostics["approved_channels"])+" · 재연결: "+str(diagnostics["reconnect_count"])+
                    " · 구독응답코드: "+str(diagnostics["subscription_code"] or "없음")+
                    " · 연결종료코드: "+str(diagnostics["close_code"] or "없음"))
