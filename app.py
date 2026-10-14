@@ -407,6 +407,18 @@ def timestamp_fresh(value,seconds=120):
     stamp=pd.to_datetime(value,utc=True,errors="coerce")
     return bool(pd.notna(stamp) and 0<=(pd.Timestamp.now(tz="UTC")-stamp).total_seconds()<=seconds)
 
+def live_snapshot_evidence(data,connected,now=None):
+    now=pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    now=now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
+    result={"checked_utc":now.isoformat(),"connected":bool(connected),"code":str(data.get("코드","")),"channels":{}}
+    for channel in ("trade","book","program"):
+        stamp=pd.to_datetime(data.get(channel+"_received_utc"),utc=True,errors="coerce")
+        age=(now-stamp).total_seconds() if pd.notna(stamp) else None
+        result["channels"][channel]={"received_utc":stamp.isoformat() if pd.notna(stamp) else None,
+            "age_seconds":round(age,2) if age is not None else None,
+            "fresh":bool(connected and age is not None and 0<=age<=30)}
+    return result
+
 def row_live_health(row):
     return live_health(row.get("quote_received_utc"),timestamp_fresh(row.get("rest_received_utc")),
                        timestamp_fresh(row.get("trade_received_utc")) and timestamp_fresh(row.get("book_received_utc")),
@@ -1109,6 +1121,8 @@ def refresh_news_candidates(frame,top_n=10,ttl=300):
         if not name:continue
         hit=cache.get(code,{})
         refresh_ttl=min(ttl,60) if code in set(st.session_state.get('holdings',pd.DataFrame()).get('코드',[])) else ttl
+        # A failed request is not five minutes of confirmed absence of news.
+        if hit.get("error"):refresh_ttl=min(refresh_ttl,30)
         if time.time()-hit.get("time",0)<refresh_ttl:continue
         pending.append((code,name))
     def fetch_one(code,name):
@@ -1209,11 +1223,14 @@ def live_release_gate():
         if corp:dart_recent_disclosures(corp)
     refresh_news_candidates(pd.DataFrame([{"코드":"005930","종목":"삼성전자"}]))
     data,connected,error=live_tape().snapshot()
+    evidence=live_snapshot_evidence(data,connected)
+    st.session_state.setdefault("feed_diagnostics",{})["WEBSOCKET_EVIDENCE"]=evidence
+    channels=evidence["channels"]
     checks={
         "KIS REST":bool(q and _safe_num(q.get("현재가"))>0),
-        "WebSocket 실제 체결·호가":bool(connected and timestamp_fresh(data.get("trade_received_utc")) and timestamp_fresh(data.get("book_received_utc"))),
+        "WebSocket 실제 체결·호가":channels["trade"]["fresh"] and channels["book"]["fresh"],
         "DART 응답":bool(st.session_state.get("dart_live_verified")),
-        "프로그램 실제 수신":timestamp_fresh(data.get("program_received_utc")),
+        "프로그램 실제 수신":channels["program"]["fresh"],
         "뉴스 최신 근거":any(news_for_stock(x.get("stock_code"),x.get("stock_name")) for x in _NEWS_CACHE),
         "성적검증":bool(st.session_state.get("performance_verified") and st.session_state.get("performance_verified_build")==build_id()),
         "실제 배포 확인":deployment_attestation_valid(),
@@ -2424,7 +2441,7 @@ def minute_setup_signal(history,now=None):
         "거래량배수":round(volume_ratio,2),"기준분봉":bars.index[-1].isoformat(),"자동주문허용":False,
         "검증범위":"최근 완료 21분봉 기술 조건 · 당일 전체 VWAP 아님 · 수급/뉴스/호가/성과 검증 별도",**levels}
 
-def replay_minute_setups(history,cost_bps=20):
+def replay_minute_setups(history,cost_bps=20,now=None):
     """Historical simulation, next-bar entry, stop first on ambiguous bars.
 
     Cost is a configurable assumption, not a broker fee/tax quote.
@@ -2434,7 +2451,15 @@ def replay_minute_setups(history,cost_bps=20):
     if not isinstance(history.index,pd.DatetimeIndex) or history.index.has_duplicates or history.index.hasnans:return pd.DataFrame()
     columns=["시가","고가","저가","종가","거래량"]
     if any(c not in history for c in columns):return pd.DataFrame()
-    bars=history[columns].copy().sort_index().apply(pd.to_numeric,errors="coerce")
+    clock=pd.Timestamp.now(tz="Asia/Seoul") if now is None else pd.Timestamp(now)
+    if clock.tzinfo is None:return pd.DataFrame()
+    clock=clock.tz_convert("Asia/Seoul")
+    bars=history[columns].copy().sort_index()
+    bars.index=bars.index.tz_localize("Asia/Seoul") if bars.index.tz is None else bars.index.tz_convert("Asia/Seoul")
+    # Current/future bars have no final high/low: never use them to settle a trade.
+    bars=bars[bars.index+pd.Timedelta(minutes=1)<=clock]
+    if len(bars)<22:return pd.DataFrame()
+    bars=bars.apply(pd.to_numeric,errors="coerce")
     if bars.isna().any().any() or not np.isfinite(bars.to_numpy()).all():return pd.DataFrame()
     if (bars[columns[:4]]<=0).any().any() or (bars["거래량"]<0).any():return pd.DataFrame()
     if ((bars["고가"]<bars[["시가","종가","저가"]].max(axis=1)) | (bars["저가"]>bars[["시가","종가"]].min(axis=1))).any():return pd.DataFrame()
@@ -2983,7 +3008,7 @@ if not df.empty:
                 with st.expander("분봉 신호 계산 근거",expanded=False):st.json(minute_signal)
                 with st.expander("수신 분봉 과거 신호 재검증",expanded=False):
                     replay=replay_minute_setups(minutes)
-                    st.caption("최근 수신 분봉만 재생 · 다음 봉 시가 진입 가정 · 동시 손절/목표 도달은 손절 우선 · 왕복 비용 20bps 가정. 실제 체결·전체 거래일 성과가 아닙니다.")
+                    st.caption("완료된 수신 분봉만 재생 · 진행 중인 봉 제외 · 다음 봉 시가 진입 가정 · 동시 손절/목표 도달은 손절 우선 · 왕복 비용 20bps 가정. 실제 체결·전체 거래일 성과가 아닙니다.")
                     if replay.empty:st.info("이 구간에서 검증 가능한 진입 신호가 없습니다. 수익률 0% 또는 성공으로 처리하지 않습니다.")
                     else:
                         st.dataframe(replay,hide_index=True,use_container_width=True)
@@ -3242,7 +3267,7 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
             "diagnostics":dict(st.session_state.get("feed_diagnostics",{}))}
     if "live_test_result" in st.session_state:
         result=st.session_state.live_test_result
-        st.caption("마지막 라이브 검사: "+result["time"])
+        st.caption("마지막 라이브 검사: "+result["time"]+" · 검사 당시 저장 결과이며 위의 현재 수신 상태와 시점이 다릅니다.")
         st.dataframe(pd.DataFrame(result["rows"]),hide_index=True,use_container_width=True)
         if result["passed"]:st.success("검증 완료: 모든 필수 증거 확인")
         else:st.warning(result["message"])
@@ -3294,12 +3319,14 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
             records=pd.read_csv(us_audit,dtype={"code":str})
             histories={}
             for symbol in records["code"].dropna().unique()[:50]:
-                begin=pd.to_datetime(records.loc[records["code"]==symbol,"scan_time_utc"],utc=True).min().tz_convert("America/New_York").date()
+                first_signal=pd.to_datetime(records.loc[records["code"]==symbol,"scan_time_utc"],utc=True,errors="coerce").min()
+                if pd.isna(first_signal):continue
+                begin=first_signal.tz_convert("America/New_York").date()
                 histories[symbol]=prices(symbol,begin.isoformat(),market_date("America/New_York").isoformat())
             evaluated=evaluate_snapshots(records,histories)
             st.dataframe(evaluated,use_container_width=True)
             st.download_button("미국 신호 비교 CSV",evaluated.to_csv(index=False).encode("utf-8-sig"),file_name="us_evaluated_signals.csv")
-            st.caption("미국 현지 신호일의 다음 거래일부터 일봉 비교 · 비용 20bp · 손절 우선. 실제 체결 성적이나 장중 급등 신호 검증이 아닙니다.")
+            st.caption("미국 현지 신호일의 다음 거래일부터 일봉 비교 · 비용 20bp · 손절 우선. 오늘 진행 중인 일봉 제외 · 실제 체결 성적이나 장중 급등 신호 검증이 아닙니다.")
     if st.button("📊 저장된 신호 성적검증",use_container_width=True):
         from performance import evaluate_snapshots
         if AUDIT_FILE.exists():
@@ -3310,11 +3337,13 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
             for number,code in enumerate(codes,1):
                 performance_progress.info(f"저장 신호 평가 · {number}/{len(codes)}종목 가격 이력 조회 중")
                 signals=history[history["code"]==code]
-                begin=pd.to_datetime(signals["scan_time_utc"],utc=True).min().date()
+                first_signal=pd.to_datetime(signals["scan_time_utc"],utc=True,errors="coerce").min()
+                if pd.isna(first_signal):continue
+                begin=first_signal.tz_convert("Asia/Seoul").date()
                 histories[str(code).zfill(6)]=prices(str(code).zfill(6),begin.isoformat(),market_date().isoformat())
             performance_progress.empty()
             evaluated=evaluate_snapshots(history,histories)
-            evaluated["signal_day"]=pd.to_datetime(evaluated["scan_time_utc"],utc=True).dt.tz_convert("Asia/Seoul").dt.date.astype(str)
+            evaluated["signal_day"]=pd.to_datetime(evaluated["scan_time_utc"],utc=True,errors="coerce").dt.tz_convert("Asia/Seoul").dt.date.astype(str)
             evaluated=evaluated.drop_duplicates(["code","signal_day"],keep="first")
             summary=audit_summary(evaluated)
             # Daily hypothetical outcomes do not attest to live intraday execution.
@@ -3327,8 +3356,10 @@ with st.expander("🧪 시스템 진단 / 성적기록", expanded=False):
         result=st.session_state.daily_performance_result
         st.caption("마지막 일봉 평가 · 계산 빌드 "+result["build"])
         st.dataframe(result["summary"],use_container_width=True)
+        outcome_counts=result["evaluated"].get("evaluation",pd.Series(dtype=str)).value_counts()
+        st.caption(f"평가 보류 {int(outcome_counts.get('PENDING',0))}건 · 잘못된 신호 기록 {int(outcome_counts.get('INVALID_SNAPSHOT',0))}건 · 미결 시나리오 {int(outcome_counts.get('OPEN',0))}건")
         st.download_button("검증 성적 CSV",result["evaluated"].to_csv(index=False).encode("utf-8-sig"),file_name="evaluated_signals.csv")
-        st.caption("신호 다음 거래일부터 평가 · 비용 20bp · 같은 일봉에서 손절/목표 모두 도달하면 손절 우선. 일봉 근사이며 체결 수익이 아닙니다.")
+        st.caption("신호 다음 거래일부터 평가 · 비용 20bp · 같은 일봉에서 손절/목표 모두 도달하면 손절 우선. 오늘 진행 중인 일봉은 제외하고 이전 날짜 완료 봉만 평가 · 일봉 근사이며 체결 수익이 아닙니다.")
         st.info("일봉 평가 결과는 장중 매수·매도 성적검증 통과 증거로 사용하지 않습니다. 미결·자료 부족은 검증 완료로 처리하지 않습니다.")
     historical_code=st.text_input("과거 검증 종목코드",value="005930",key="historical_code")
     if st.button("과거 일봉 워크포워드 검증",use_container_width=True):
