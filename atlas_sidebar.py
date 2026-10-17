@@ -1,4 +1,4 @@
-"""ATLAS read-only KIS REST monitor with session-scoped 30-second auto refresh.
+"""ATLAS read-only KIS REST monitor with session-scoped 15-second auto refresh.
 
 This is polling, NOT tick-by-tick WebSocket. Only refresh while the page is open.
 Never label REST receipt timestamps as exchange execution timestamps.
@@ -10,7 +10,7 @@ import streamlit as st
 from atlas_kis_readonly import WATCHLIST, QuoteUnavailable, token_request, quote_request
 
 KST = ZoneInfo("Asia/Seoul")
-POLL_SECONDS = 30
+POLL_SECONDS = 15
 
 
 def krx_regular_open(now=None):
@@ -36,7 +36,7 @@ def _render_quotes(rows, updated=None):
         st.caption(f"KIS REST 수신 UTC {quote['rest_received_utc']}")
     if updated:
         st.caption(f"마지막 REST 조회 UTC: {updated.isoformat()}")
-    st.info("30초 REST 조회는 틱 단위 실시간 체결이 아닙니다. "
+    st.info("15초 REST 조회는 틱 단위 실시간 체결이 아닙니다. "
             "외국인·기관·프로그램 수급 및 BUY 신호는 검증 전입니다.")
 
 
@@ -49,7 +49,7 @@ def render_atlas_sidebar():
             st.success("한국 KRX 정규장 시간대 · 휴장일은 별도 검증 필요")
         else:
             st.warning("KRX 정규장 시간 외 · 표시되는 가격은 마지막 조회값일 수 있음")
-        auto = st.toggle("30초 자동 갱신 (이 페이지가 열려 있을 때만)",
+        auto = st.toggle("15초 자동 갱신 (이 페이지가 열려 있을 때만)",
                          value=False, key="atlas_auto_poll")
         if auto and not open_now:
             st.caption("정규장 시간 외 자동 조회는 중단됩니다.")
