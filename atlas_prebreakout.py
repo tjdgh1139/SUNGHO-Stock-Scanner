@@ -29,7 +29,7 @@ def _number(row,key):
         return None
 
 
-def rank_prebreakout_kr(items, *, now=None, limit=3):
+def rank_prebreakout_kr(items, *, now=None, limit=3, min_turnover=3_000_000_000):
     now=now or datetime.now(timezone.utc)
     results=[]
     for item in items:
@@ -41,7 +41,7 @@ def rank_prebreakout_kr(items, *, now=None, limit=3):
         if any(x is None for x in (pct,turnover,price)):
             continue
         # Exclude already exploded or falling candidates.
-        if not (0.2<=pct<=5.0 and turnover>=3_000_000_000 and price>0):
+        if not (0.2<=pct<=5.0 and turnover>=min_turnover and price>0):
             continue
         acceleration=_number(item,"turnover_acceleration")
         near_high=item.get("near_intraday_high") is True
