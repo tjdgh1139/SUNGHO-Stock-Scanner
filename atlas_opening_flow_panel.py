@@ -5,7 +5,7 @@ Full-market sector leader claims require wider live coverage and baselines.
 """
 from datetime import datetime,timezone
 import streamlit as st
-from opening_flow_radar import opening_minute,turnover_change,rank_sector_inflows
+from opening_flow_radar import opening_minute,turnover_change,parse_utc,MAX_AGE
 from atlas_ws_panel import live_state
 
 STOCKS={"005930":"삼성전자","000660":"SK하이닉스","009150":"삼성전기"}
@@ -59,7 +59,9 @@ def render_opening_flow_panel(tape_factory):
                 ):
                     st.session_state.atlas_opening_prev[code]=current
             # Display only recent, comparable deltas; never fill missing symbols as zero.
-            results=list(st.session_state.atlas_opening_changes.values())
+            results=[x for x in st.session_state.atlas_opening_changes.values()
+                     if parse_utc(x.get("received_utc")) is not None and
+                     0<=(now-parse_utc(x["received_utc"])).total_seconds()<=MAX_AGE]
             st.caption(f"개장 후 {minute:.1f}분 · {bucket} 관찰 구간 · WS 정상 변화 {len(results)}/3종목")
             if results:
                 for item in sorted(results,key=lambda x:x["rate_per_min"],reverse=True):
