@@ -58,4 +58,4 @@ def test_monitor_page_without_secrets_fails_closed():
     page = Path(__file__).with_name("pages") / "01_ATLAS_Live_Monitor.py"
     app = AppTest.from_file(str(page), default_timeout=20).run()
     assert not app.exception
-    assert any("KIS 인증정보 미설정" in x.message for x in app.error)
+    assert any("KIS 인증정보 미설정" in x.value for x in app.error)
