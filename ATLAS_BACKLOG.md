@@ -2,6 +2,15 @@
 
 Source: user decisions across prior ATLAS/SUNGHO-Stock-Scanner conversations, cross-checked with VERIFICATION_KO.md. This is a task tracker, not evidence of deployed functionality.
 
+## Automatic PT/KST preopen implementation (2026-10-16)
+- [x] GitHub Actions schedule KST 07:00, 07:50, 07:55 (PT previous day 15:00/15:50/15:55 PDT; 14:00/14:50/14:55 PST); market holiday gate XKRX
+- [x] Historical EOD-only WATCH shortlist from disclosed initial 24 Korean symbols; verified public FinanceDataReader dry-run: 24 attempted, 6 passed, 5 displayed. This is NOT full-market coverage or verified future winners.
+- [x] App loads same-session published snapshot automatically (45s cache) with no manual Scan and PT/KST timestamp labels; actual scheduled GitHub publication and remote Streamlit rendering remain to verify.
+- [x] A uses NXT authenticated WS source gating 08:00 onward; B independently reranks NXT candidates if same WS has valid NX ticks, then KRX regular session.
+- [ ] Connect official preopen news/catalysts and investor EOD flow to background scoring; currently technical EOD-only
+- [ ] Verify first real scheduled job and GitHub push rights, snapshot availability and deployed app on Sunday PT / Monday KST
+- [ ] Replace browser-open-only WS with persistent authenticated market-hours worker and durable predictions/outcomes; no claims of 24/7 monitoring
+
 ## P0 — user priority: discover leaders BEFORE the breakout (2026-10-16)
 - [x] Pure catalyst-to-sector-to-leader evidence ranking with fail-closed tests (feature branch; NOT wired to a verified live news feed)
 - [ ] Pre-open KR/US independent pipeline: official filings, company IR, verified news, earnings, CPI/FOMC, macro, geopolitics/war and supply chain; use actual publication timestamps, source links, dedupe and cross-source confirmation
