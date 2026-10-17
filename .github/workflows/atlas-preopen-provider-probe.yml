@@ -32,3 +32,19 @@ jobs:
               except Exception as exc:
                   print(code,'unavailable',type(exc).__name__)
           PY
+      - name: Dry-run 24-stock TOP5 scoring for Monday 07:00 KST
+        run: |
+          python - <<'PY'
+          import csv
+          from datetime import datetime,timezone
+          import FinanceDataReader as fdr
+          from atlas_preopen_background import build_snapshot
+          now=datetime(2026,10,18,22,0,tzinfo=timezone.utc)
+          with open('config/atlas_preopen_universe.csv',encoding='utf-8') as f:
+              universe=[(r['code'],r['name'],r['sector']) for r in csv.DictReader(f)]
+          snapshot=build_snapshot(universe,lambda code:fdr.DataReader(code,'2026-07-20'),now=now)
+          print('Attempted',snapshot['coverage']['attempted'],'validated',snapshot['coverage']['validated'])
+          for c in snapshot['candidates']:
+              print(c['symbol'],c['name'],c['last_trading_date'],c['score'],c['status'])
+          assert snapshot['coverage']['validated']>0, 'No valid historical candidates from public feed'
+          PY
