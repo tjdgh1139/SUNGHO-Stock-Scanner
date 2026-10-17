@@ -1,0 +1,40 @@
+name: ATLAS preopen minute monitor CI
+on:
+  push:
+    branches: [feature/atlas-preopen-minute-monitor]
+    paths: ['.github/workflows/atlas-preopen-minute-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Integrate preopen tracker
+        run: python scripts/integrate_preopen_tracker.py
+      - name: Install dependencies
+        run: python -m pip install -r requirements-test.txt
+      - name: Compile
+        run: python -m compileall -q app.py atlas_preopen_monitor.py atlas_preopen_tracker_panel.py atlas_auto_candidate_board.py
+      - name: Regression and minute risk tests
+        env:
+          KIS_APP_KEY: ""
+          KIS_APP_SECRET: ""
+        run: python -m pytest -q test_regression.py test_atlas_prebreakout.py test_atlas_auto_candidates.py test_atlas_auto_candidates_smoke.py test_foreign_flow.py test_opening_flow_radar.py test_atlas_preopen_monitor.py
+      - name: Commit tested app integration
+        run: |
+          if ! git diff --quiet -- app.py; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app.py
+            git commit -m "feat: track frozen preopen scan candidates each opening minute"
+            git push origin HEAD:feature/atlas-preopen-minute-monitor
+          fi
