@@ -39,3 +39,4 @@ jobs:
             git push origin HEAD:feature/atlas-foreign-flow-candidates
           fi
 # Verify post-close investor data handling
+# Confirm missing-secret graceful handling
