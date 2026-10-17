@@ -38,3 +38,4 @@ jobs:
             git commit -m "feat: add verified EOD foreign institutional flow candidate ranking"
             git push origin HEAD:feature/atlas-foreign-flow-candidates
           fi
+# Verify post-close investor data handling
