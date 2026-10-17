@@ -38,9 +38,11 @@ def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory,
     def panel():
         now=datetime.now(timezone.utc)
         automatic=background_snapshot()
-        if automatic and st.session_state.get("atlas_preopen_source_KR")!="manual":
+        if automatic:
             existing=st.session_state.get("atlas_frozen_KR")
-            if (not existing or existing.get("session_date")!=automatic["session_date"] or
+            same_day=bool(existing and existing.get("session_date")==automatic["session_date"])
+            manual_today=(same_day and st.session_state.get("atlas_preopen_source_KR")=="manual")
+            if not manual_today and (not same_day or
                 existing.get("frozen_at_utc","")<automatic["frozen_at_utc"]):
                 st.session_state["atlas_frozen_KR"]=automatic
                 st.session_state["atlas_preopen_source_KR"]="automatic"
