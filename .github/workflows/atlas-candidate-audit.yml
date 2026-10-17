@@ -1,0 +1,29 @@
+name: ATLAS candidate API audit
+on:
+  push:
+    branches: [feature/atlas-autonomous-kr-us-candidates]
+    paths: ['.github/workflows/atlas-candidate-audit.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect scanner sources and auto refresh
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          t=Path('app.py').read_text(encoding='utf-8').splitlines()
+          tree=ast.parse('\n'.join(t))
+          for n in ast.walk(tree):
+              if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and any(k in n.name.lower() for k in ('rank','scan','us_','listing','quote','market','price','candidate','top_','live_tape','refresh')):
+                  print('DEF',n.name,n.lineno,getattr(n,'end_lineno',0))
+          for i,l in enumerate(t):
+              if 'US_SYMBOLS=' in l or 'us_scan=' in l or 'watch_candidates=' in l or 'render_compact_dashboard(' in l or 'st.session_state.scan =' in l:
+                  print('ANCHOR',i+1,l[:220])
+          for a,b in [(950,1005),(1440,1470),(2310,2337),(2539,2581),(2890,2915)]:
+              print('SECTION',a,b)
+              for i in range(a-1,min(b,len(t))):print(f'{i+1}: {t[i][:180]}')
+          PY
