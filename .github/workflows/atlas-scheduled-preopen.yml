@@ -47,7 +47,7 @@ jobs:
         run: python atlas_preopen_job.py
       - name: Commit only if a verified snapshot exists
         run: |
-          if ! git diff --quiet -- data/atlas_preopen_kr_latest.json; then
+          if [ -n "$(git status --porcelain -- data/atlas_preopen_kr_latest.json)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add data/atlas_preopen_kr_latest.json
