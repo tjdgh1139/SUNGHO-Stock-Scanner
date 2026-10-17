@@ -124,7 +124,7 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                     "현재가":live.get("현재가"),"장중등락%":live.get("등락%"),
                     "장중거래대금":live.get("장중거래대금"),
                     "장중거래량":live.get("장중거래량"),
-                    "quote_received_utc":live.get("quote_received_utc"),
+                    "quote_received_utc":live.get("trade_received_utc"),
                     "장중고가":live.get("장중고가"),
                     "체결강도":live.get("체결강도"),
                     "프로그램순매수대금":live.get("프로그램순매수대금"),
