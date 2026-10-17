@@ -11,7 +11,7 @@ def test_krx_closed_on_saturday():
     assert not krx_regular_open(utc("2026-10-17T01:00:00Z"))
 
 def test_krx_closed_before_open():
-    assert not krx_regular_open(utc("2026-10-16T00:00:00Z"))
+    assert not krx_regular_open(utc("2026-10-15T23:59:00Z"))
 
 def test_krx_closed_after_close():
     assert not krx_regular_open(utc("2026-10-16T06:30:00Z"))
