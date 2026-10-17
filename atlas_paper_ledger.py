@@ -145,6 +145,14 @@ def performance_summary(outcomes, *, horizon="5m"):
     # Deduplicate by ID, last snapshot wins only when user supplies ordered events.
     unique={r["id"]:r for r in selected}
     vals=[r["net_return_pct"] for r in unique.values()]
-    return {"count":len(vals),"win_rate_pct":round(100*sum(x>0 for x in vals)/len(vals),2),
+    wins=[x for x in vals if x>0]
+    losses=[x for x in vals if x<=0]
+    return {"count":len(vals),
+            "win_rate_pct":round(100*len(wins)/len(vals),2),
+            "false_positive_pct":round(100*len(losses)/len(vals),2),
             "avg_net_return_pct":round(sum(vals)/len(vals),4),
-            "status":"PAPER_BACKTEST_NOT_REALIZED"}
+            "avg_win_pct":round(sum(wins)/len(wins),4) if wins else None,
+            "avg_loss_pct":round(sum(losses)/len(losses),4) if losses else None,
+            "worst_trade_pct":round(min(vals),4),
+            "status":"PAPER_BACKTEST_NOT_REALIZED",
+            "limitations":"Selected signals only; false_positive_pct is non-profitable paper signals, not whole-market false positive rate"}
