@@ -11,7 +11,7 @@ import os
 import streamlit as st
 from atlas_paper_sqlite import load_state,save_events
 import pandas as pd
-from atlas_paper_live_bridge import empty_ledger,step_ledger,session_report
+from atlas_paper_live_bridge import empty_ledger,step_ledger,session_report,live_feed_health
 
 
 def render_paper_live_panel(tape_factory):
@@ -62,6 +62,9 @@ def render_paper_live_panel(tape_factory):
         c1.metric("가상 관찰 신호",len(state["signals"]))
         c2.metric("후속 체결 확인",len(state["fills"]))
         c3.metric("수익률 평가 기록",len(state["outcomes"]))
+        health=live_feed_health(ws,connected,getattr(tape,"market",None),now=now)
+        st.caption("실시간 데이터 상태: "+health["status"]+
+                   f" · 수신 {health['received_symbols']}종목 · 인증 {health['verified_symbols']}종목")
         if not connected:
             st.caption("KIS 실시간 WS 미연결 · 가상 진입 중단 (기존 기록 유지)")
         if error:
