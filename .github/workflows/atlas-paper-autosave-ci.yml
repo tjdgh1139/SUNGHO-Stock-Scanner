@@ -23,4 +23,4 @@ jobs:
         env:
           KIS_APP_KEY: ""
           KIS_APP_SECRET: ""
-        run: python -m pytest -q test_atlas_paper_sqlite.py test_atlas_paper_live_bridge.py test_atlas_paper_live_smoke.py test_atlas_paper_ledger.py test_atlas_paper_store.py test_atlas_ws_panel.py test_atlas_preopen_rollover.py test_regression.py
+        run: python -m pytest -q test_atlas_paper_sqlite.py test_atlas_paper_feed_health.py test_atlas_paper_live_bridge.py test_atlas_paper_live_smoke.py test_atlas_paper_ledger.py test_atlas_paper_store.py test_atlas_ws_panel.py test_atlas_preopen_rollover.py test_regression.py
