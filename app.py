@@ -2754,6 +2754,8 @@ from atlas_foreign_flow_panel import render_foreign_flow_panel
 render_foreign_flow_panel(st.session_state.get("scan",pd.DataFrame()),live_tape,secret_value)
 from atlas_opening_flow_panel import render_opening_flow_panel
 render_opening_flow_panel(live_tape)
+from atlas_preopen_feed_panel import render_published_preopen
+render_published_preopen()
 from atlas_preopen_tracker_panel import capture_preopen, render_preopen_tracker
 render_preopen_tracker(kis_quote,kis_us_quote,US_SYMBOLS,live_tape,
                        websocket_capability,kis_configured,secret_value)
