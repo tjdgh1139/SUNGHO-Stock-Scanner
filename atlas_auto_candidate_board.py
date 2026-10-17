@@ -16,7 +16,7 @@ from atlas_kis_readonly import WATCHLIST
 from atlas_auto_candidates import (
     KR_BATCH,KR_INTERVAL,US_INTERVAL,KR_UNIVERSE_LIMIT,
     kr_regular_hours,us_regular_hours,normalized_kr_universe,
-    kr_candidate,us_candidates,fresh_ranked,
+    kr_candidate,us_candidates,fresh_ranked,live_ws_to_kr_quote,
 )
 
 
@@ -120,16 +120,8 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
         for code,name in WATCHLIST:
             live=ws_rows.get(code,{})
             if live_state(live,ws_connected)=="실시간 수신 확인":
-                live_quote={
-                    "현재가":live.get("현재가"),"장중등락%":live.get("등락%"),
-                    "장중거래대금":live.get("장중거래대금"),
-                    "장중거래량":live.get("장중거래량"),
-                    "quote_received_utc":live.get("trade_received_utc"),
-                    "장중고가":live.get("장중고가"),
-                    "체결강도":live.get("체결강도"),
-                    "프로그램순매수대금":live.get("프로그램순매수대금"),
-                }
-                item=kr_candidate(code,name,live_quote,datetime.now(timezone.utc))
+                live_quote=live_ws_to_kr_quote(live)
+                item=kr_candidate(code,name,live_quote,datetime.now(timezone.utc)) if live_quote else None
                 if item:
                     item["source"]="KIS WS · 체결/호가/프로그램 최근 10초 확인"
                     record_kr_item(code,item,live_quote,"WS")
