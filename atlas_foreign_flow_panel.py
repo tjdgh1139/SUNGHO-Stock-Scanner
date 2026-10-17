@@ -2,7 +2,7 @@
 import time
 import streamlit as st
 import pandas as pd
-from atlas_kis_readonly import WATCHLIST, token_request
+from atlas_kis_readonly import WATCHLIST, token_request, QuoteUnavailable
 from foreign_flow import investor_history,confirmed_flow
 from atlas_ws_panel import live_state
 
@@ -65,7 +65,7 @@ def render_foreign_flow_panel(scan,tape_factory,secret_value):
                     if flow:
                         results.append({**flow,"name":name})
                 st.session_state.atlas_foreign_results=results
-            except (KeyError,ValueError,TypeError) as exc:
+            except (KeyError,ValueError,TypeError,QuoteUnavailable) as exc:
                 st.warning("KIS 투자자 수급 조회 준비 실패: "+type(exc).__name__)
         results=st.session_state.get("atlas_foreign_results",[])
         if not results:
