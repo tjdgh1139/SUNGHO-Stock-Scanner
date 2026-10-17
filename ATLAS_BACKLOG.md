@@ -2,6 +2,15 @@
 
 Source: user decisions across prior ATLAS/SUNGHO-Stock-Scanner conversations, cross-checked with VERIFICATION_KO.md. This is a task tracker, not evidence of deployed functionality.
 
+## P0 — user priority: discover leaders BEFORE the breakout (2026-10-16)
+- [x] Pure catalyst-to-sector-to-leader evidence ranking with fail-closed tests (feature branch; NOT wired to a verified live news feed)
+- [ ] Pre-open KR/US independent pipeline: official filings, company IR, verified news, earnings, CPI/FOMC, macro, geopolitics/war and supply chain; use actual publication timestamps, source links, dedupe and cross-source confirmation
+- [ ] Determine directional sector exposure with uncertainty, then map beneficiaries, competitors and *sector leaders* by liquidity, relative strength, volume/turnover acceleration and same-time baseline
+- [ ] Overlay investor EOD flows vs real-time program/trade/book data separately; VWAP, MA20, Bollinger, RSI, MACD/OSC, distance, spread and invalidation; avoid late breakout chasing
+- [ ] Publish only the strongest KR TOP3 and US TOP3 *before* surge in separate on-screen panels; update during sessions, cancel stale/failed candidates and show source timestamp, price, entry/stop/target, rationale and risk
+- [ ] Capture predictions at issue time, subsequent 5m/30m/EOD/3d outcomes and fees/slippage, assess hit rate, net expectancy, drawdown and false positives vs a naive momentum baseline; no success claim without out-of-sample evidence
+- [ ] Verify news providers' actual auth, rate limits, licensing and stream deployment; do not claim autonomous 24/7 monitoring from an open Streamlit tab
+
 ## P0 — complete before release
 - [x] Baseline CI compile + 26 regression checks on GitHub Actions (main)
 - [x] Isolated candidate buying-flow evaluator and tests (feature branch; integration pending)
