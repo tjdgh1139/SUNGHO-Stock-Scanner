@@ -1,0 +1,35 @@
+name: ATLAS pre-NXT published feed CI
+on:
+  push:
+    branches: [feature/atlas-preopen-published-feed]
+    paths: ['.github/workflows/atlas-preopen-feed-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Integrate feed panel
+        run: python scripts/integrate_preopen_feed.py
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-test.txt
+      - name: Compile
+        run: python -m compileall -q app.py atlas_preopen_feed.py atlas_preopen_feed_panel.py
+      - name: Test feed and existing scanner
+        run: python -m pytest -q test_atlas_preopen_feed.py test_atlas_preopen_monitor.py test_atlas_auto_candidates.py
+      - name: Commit verified app integration
+        run: |
+          if ! git diff --quiet -- app.py; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app.py
+            git commit -m "ui: show published 07:00 and 07:55 pre-NXT top-five candidates"
+            git fetch origin feature/atlas-preopen-published-feed
+            git rebase origin/feature/atlas-preopen-published-feed
+            git push origin HEAD:feature/atlas-preopen-published-feed
+          fi
