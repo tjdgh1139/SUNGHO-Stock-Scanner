@@ -5,7 +5,13 @@ s=p.read_text(encoding="utf-8")
 anchor='render_foreign_flow_panel(st.session_state.get("scan",pd.DataFrame()),live_tape,secret_value)'
 added='''from atlas_auto_candidate_board import render_auto_candidate_board
 render_auto_candidate_board(listing,kis_quote,kis_us_movers,kis_configured,\n                            live_tape,websocket_capability,secret_value)'''
-if "render_auto_candidate_board(" in s:
+old_call="render_auto_candidate_board(listing,kis_quote,kis_us_movers,kis_configured)"
+new_call="render_auto_candidate_board(listing,kis_quote,kis_us_movers,kis_configured,\\n                            live_tape,websocket_capability,secret_value)"
+if old_call in s:
+    s=s.replace(old_call,new_call.replace("\\\\n","\\n"),1)
+    p.write_text(s,encoding="utf-8")
+    print("Upgraded existing automatic candidate board to KIS WS")
+elif "render_auto_candidate_board(" in s:
     print("Already integrated")
 elif s.count(anchor)!=1:
     raise SystemExit("Unique foreign-flow panel anchor missing")
