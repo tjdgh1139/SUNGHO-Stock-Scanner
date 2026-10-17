@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 import time
 import pandas as pd
 import streamlit as st
+from atlas_ws_panel import live_state
+from atlas_kis_readonly import WATCHLIST
 from atlas_auto_candidates import (
     KR_BATCH,KR_INTERVAL,US_INTERVAL,KR_UNIVERSE_LIMIT,
     kr_regular_hours,us_regular_hours,normalized_kr_universe,
@@ -16,9 +18,10 @@ from atlas_auto_candidates import (
 )
 
 
-def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_configured_fn):
+def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_configured_fn,
+                                tape_factory,websocket_capability,secret_value):
     st.markdown("### 🚀 ATLAS 자동 급등 후보 탐색")
-    st.caption("스캔 버튼 불필요 · 한국 KRX 순환 조회 / 미국 Nasdaq·NYSE·NYSE American 급등 순위 · 화면이 열려 있을 때만 동작")
+    st.caption("스캔 버튼 불필요 · 화면 2초 갱신 / 한국 KRX REST 30초 순환 / 미국 순위 60초 조회 · 페이지 열려 있을 때만 동작")
     if not kis_configured_fn():
         st.warning("KIS API 연결이 필요합니다. 검증되지 않은 후보는 표시하지 않습니다.")
         return
@@ -40,7 +43,7 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
     if "atlas_auto_us_diag" not in st.session_state:
         st.session_state.atlas_auto_us_diag={}
 
-    @st.fragment(run_every="30s")
+    @st.fragment(run_every="2s")
     def board():
         now=datetime.now(timezone.utc)
         mono=time.monotonic()
@@ -77,6 +80,35 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
             except Exception as exc:
                 st.session_state.atlas_auto_us_rows=[]
                 st.session_state.atlas_auto_us_diag={"error":type(exc).__name__}
+        # One existing KIS WebSocket session: auto-connect the 3 core stocks
+        # without requiring a separate Scan button; no extra socket is created.
+        tape=tape_factory()
+        if kr_open and websocket_capability() and (
+            mono-st.session_state.get("atlas_auto_ws_attempt",-1e12)>=120
+        ):
+            st.session_state.atlas_auto_ws_attempt=mono
+            if getattr(tape,"market",None) in (None,"J") and not (
+                getattr(tape,"thread",None) and tape.thread.is_alive()
+            ):
+                try:
+                    tape.start(tuple(code for code,_ in WATCHLIST),
+                               secret_value("KIS_APP_KEY"),secret_value("KIS_APP_SECRET"),market="J")
+                except Exception:
+                    pass
+        ws_rows,ws_connected,_=tape.snapshots()
+        for code,name in WATCHLIST:
+            live=ws_rows.get(code,{})
+            if live_state(live,ws_connected)=="실시간 수신 확인":
+                live_quote={
+                    "현재가":live.get("현재가"),"장중등락%":live.get("등락%"),
+                    "장중거래대금":live.get("장중거래대금"),
+                    "장중거래량":live.get("장중거래량"),
+                    "quote_received_utc":live.get("quote_received_utc"),
+                }
+                item=kr_candidate(code,name,live_quote,datetime.now(timezone.utc))
+                if item:
+                    item["source"]="KIS WS · 체결/호가/프로그램 최근 10초 확인"
+                    st.session_state.atlas_auto_kr_seen[code]=item
         kr=fresh_ranked(list(st.session_state.atlas_auto_kr_seen.values()),datetime.now(timezone.utc))
         us=fresh_ranked(st.session_state.atlas_auto_us_rows,datetime.now(timezone.utc))
         left,right=st.columns(2,gap="medium")
