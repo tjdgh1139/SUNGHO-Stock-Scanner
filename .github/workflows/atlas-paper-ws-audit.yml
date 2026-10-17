@@ -1,0 +1,26 @@
+name: Audit KIS WS paper eligibility
+on:
+  push:
+    branches: [feature/atlas-paper-live-bridge]
+    paths: ['.github/workflows/atlas-paper-ws-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect KIS WS parser and subscriptions
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          s=Path('app.py').read_text(encoding='utf-8')
+          lines=s.splitlines()
+          tree=ast.parse(s)
+          for n in ast.walk(tree):
+              if isinstance(n,(ast.ClassDef,ast.FunctionDef)) and ('KISLiveTape' in n.name or n.name in ('live_tape','websocket_capability')):
+                  print('OBJECT',n.name,n.lineno,n.end_lineno)
+                  for i in range(n.lineno-1,min(n.end_lineno,n.lineno+200)):
+                      print(f'{i+1}: {lines[i][:180]}')
+          PY
