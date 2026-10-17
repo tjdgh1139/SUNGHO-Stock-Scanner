@@ -1,4 +1,5 @@
 name: ATLAS compact fast dashboard CI
+# Includes REST freshness age and compact view tests
 on:
   push:
     branches: [feature/atlas-compact-fast-dashboard]
