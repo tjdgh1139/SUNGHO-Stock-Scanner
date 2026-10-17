@@ -10,6 +10,7 @@ import time
 import pandas as pd
 import streamlit as st
 from atlas_ws_panel import live_state
+from atlas_prebreakout import rank_prebreakout_kr,rank_prebreakout_us
 from atlas_kis_readonly import WATCHLIST
 from atlas_auto_candidates import (
     KR_BATCH,KR_INTERVAL,US_INTERVAL,KR_UNIVERSE_LIMIT,
@@ -20,7 +21,7 @@ from atlas_auto_candidates import (
 
 def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_configured_fn,
                                 tape_factory,websocket_capability,secret_value):
-    st.markdown("### 🚀 ATLAS 자동 급등 후보 탐색")
+    st.markdown("### 🎯 ATLAS 급등 *전* 유력 후보")
     st.caption("스캔 버튼 불필요 · 화면 2초 갱신 / 한국 KRX REST 30초 순환 / 미국 순위 60초 조회 · 페이지 열려 있을 때만 동작")
     if not kis_configured_fn():
         st.warning("KIS API 연결이 필요합니다. 검증되지 않은 후보는 표시하지 않습니다.")
@@ -59,8 +60,11 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
             universe=st.session_state.atlas_auto_kr_universe
             if universe:
                 cursor=st.session_state.atlas_auto_kr_cursor
-                for i in range(min(KR_BATCH,len(universe))):
-                    code,name=universe[(cursor+i)%len(universe)]
+                core=[pair for pair in WATCHLIST if pair[0] in {c for c,_ in universe}]
+                slots=max(0,KR_BATCH-len(core))
+                batch=core+[universe[(cursor+i)%len(universe)] for i in range(min(slots,len(universe)))]
+                batch=list(dict((c,(c,n)) for c,n in batch).values())
+                for code,name in batch:
                     st.session_state.atlas_auto_kr_scanned.add(code)
                     try:
                         q=kis_quote_fn(code,market="J")
@@ -70,7 +74,7 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                                 st.session_state.atlas_auto_kr_seen[code]=item
                     except Exception:
                         continue
-                st.session_state.atlas_auto_kr_cursor=(cursor+KR_BATCH)%len(universe)
+                st.session_state.atlas_auto_kr_cursor=(cursor+slots)%len(universe)
         if us_open and mono-st.session_state.atlas_auto_us_last>=US_INTERVAL:
             st.session_state.atlas_auto_us_last=mono
             try:
@@ -104,6 +108,9 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                     "장중거래대금":live.get("장중거래대금"),
                     "장중거래량":live.get("장중거래량"),
                     "quote_received_utc":live.get("quote_received_utc"),
+                    "장중고가":live.get("장중고가"),
+                    "체결강도":live.get("체결강도"),
+                    "프로그램순매수대금":live.get("프로그램순매수대금"),
                 }
                 item=kr_candidate(code,name,live_quote,datetime.now(timezone.utc))
                 if item:
@@ -111,6 +118,33 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                     st.session_state.atlas_auto_kr_seen[code]=item
         kr=fresh_ranked(list(st.session_state.atlas_auto_kr_seen.values()),datetime.now(timezone.utc))
         us=fresh_ranked(st.session_state.atlas_auto_us_rows,datetime.now(timezone.utc))
+        # Early prebreakout WATCH shortlist, not today's top gainers.
+        pre_kr=rank_prebreakout_kr(list(st.session_state.atlas_auto_kr_seen.values()),
+                                   now=datetime.now(timezone.utc),limit=3) if kr_open else []
+        pre_us=rank_prebreakout_us(st.session_state.atlas_auto_us_rows,
+                                   now=datetime.now(timezone.utc),limit=3) if us_open else []
+        with st.container(border=True):
+            st.markdown("#### 🎯 급등 전조 예측 후보 TOP 3 · 한국 / 미국")
+            st.caption("현재 상승률 순위가 아닌 초기 상승·유동성·호가·거래대금 신호 선별 · 예측 정확도 미검증")
+            col_kr,col_us=st.columns(2,gap="medium")
+            with col_kr:
+                st.markdown("**🇰🇷 한국 · 상승 전조 3종목**")
+                if pre_kr:
+                    for idx,x in enumerate(pre_kr,1):
+                        st.markdown(f"**{idx}. {x['종목']}** · {x['현재가']:,.0f}원 · {x['등락%']:+.2f}%")
+                        st.caption(f"전조점수 {x['예비점수']:.0f} · {x['근거']} · WATCH")
+                else:
+                    st.caption("검증 가능한 초기 상승 후보 없음")
+            with col_us:
+                st.markdown("**🇺🇸 미국 · 상승 전조 3종목**")
+                if pre_us:
+                    for idx,x in enumerate(pre_us,1):
+                        st.markdown(f"**{idx}. {x['코드']}** · ${x['현재가']:,.2f} · {x['등락%']:+.2f}%")
+                        st.caption(f"전조점수 {x['예비점수']:.0f} · 최근5분 {x['최근5분%']:+.2f}% · WATCH")
+                else:
+                    st.caption("검증 가능한 초기 상승 후보 없음")
+            st.caption("최대 3종목씩, 조건 미달 시 빈칸. 국내 순환 조회·미국 순위 첫 페이지에 한정됩니다.")
+        st.divider()
         left,right=st.columns(2,gap="medium")
         with left:
             st.markdown("#### 🇰🇷 한국 급등 유력 *관찰* 후보")
