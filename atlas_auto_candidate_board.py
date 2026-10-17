@@ -10,7 +10,7 @@ import time
 import pandas as pd
 import streamlit as st
 from atlas_ws_panel import live_state
-from atlas_prebreakout import rank_prebreakout_kr,rank_prebreakout_us
+from atlas_prebreakout import rank_prebreakout_kr,rank_prebreakout_us,turnover_momentum
 from atlas_kis_readonly import WATCHLIST
 from atlas_auto_candidates import (
     KR_BATCH,KR_INTERVAL,US_INTERVAL,KR_UNIVERSE_LIMIT,
@@ -33,6 +33,8 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
         st.session_state.atlas_auto_kr_cursor=0
     if "atlas_auto_kr_seen" not in st.session_state:
         st.session_state.atlas_auto_kr_seen={}
+    if "atlas_auto_kr_history" not in st.session_state:
+        st.session_state.atlas_auto_kr_history={}
     if "atlas_auto_kr_scanned" not in st.session_state:
         st.session_state.atlas_auto_kr_scanned=set()
     if "atlas_auto_kr_last" not in st.session_state:
@@ -43,6 +45,18 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
         st.session_state.atlas_auto_us_rows=[]
     if "atlas_auto_us_diag" not in st.session_state:
         st.session_state.atlas_auto_us_diag={}
+
+    def record_kr_item(code,item,quote,source):
+        key=(source,code)
+        old=st.session_state.atlas_auto_kr_history.get(key)
+        if old:
+            rate,acc=turnover_momentum(old["quote"],quote,old.get("rate"))
+            if acc is not None and 0<=acc<=100:
+                item["turnover_acceleration"]=acc
+        else:
+            rate=None
+        st.session_state.atlas_auto_kr_history[key]={"quote":dict(quote),"rate":rate}
+        st.session_state.atlas_auto_kr_seen[code]=item
 
     @st.fragment(run_every="2s")
     def board():
@@ -71,7 +85,7 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                         if q:
                             item=kr_candidate(code,name,q,now=datetime.now(timezone.utc))
                             if item:
-                                st.session_state.atlas_auto_kr_seen[code]=item
+                                record_kr_item(code,item,q,"REST")
                     except Exception:
                         continue
                 st.session_state.atlas_auto_kr_cursor=(cursor+slots)%len(universe)
@@ -115,7 +129,7 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                 item=kr_candidate(code,name,live_quote,datetime.now(timezone.utc))
                 if item:
                     item["source"]="KIS WS · 체결/호가/프로그램 최근 10초 확인"
-                    st.session_state.atlas_auto_kr_seen[code]=item
+                    record_kr_item(code,item,live_quote,"WS")
         kr=fresh_ranked(list(st.session_state.atlas_auto_kr_seen.values()),datetime.now(timezone.utc))
         us=fresh_ranked(st.session_state.atlas_auto_us_rows,datetime.now(timezone.utc))
         # Early prebreakout WATCH shortlist, not today's top gainers.
