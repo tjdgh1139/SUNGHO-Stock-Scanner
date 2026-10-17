@@ -48,3 +48,21 @@ def test_stale_quotes_rejected_both():
 def test_missing_us_spread_is_not_zero():
     r=us();r.pop("스프레드%")
     assert rank_prebreakout_us([r],now=NOW)==[]
+
+from atlas_prebreakout import turnover_momentum
+
+def snap(seconds,turnover):
+    return {"quote_received_utc":(NOW+timedelta(seconds=seconds)).isoformat(),
+            "장중거래대금":turnover}
+
+def test_turnover_acceleration_requires_previous_rate():
+    rate,acc=turnover_momentum(snap(0,1000),snap(30,4000))
+    assert rate==100 and acc is None
+    next_rate,acc=turnover_momentum(snap(30,4000),snap(60,10000),rate)
+    assert next_rate==200 and acc==2
+
+def test_turnover_cumulative_reset_rejected():
+    assert turnover_momentum(snap(0,10000),snap(30,100))==(None,None)
+
+def test_turnover_nonmonotonic_time_rejected():
+    assert turnover_momentum(snap(30,100),snap(0,1000))==(None,None)
