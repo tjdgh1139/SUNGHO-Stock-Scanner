@@ -61,3 +61,14 @@ def test_kis_investor_endpoint():
 
 def test_kis_error_returns_empty():
     assert investor_history("000660","k","s","token",get=lambda *a,**k:Response({"rt_cd":"1"}))==[]
+
+def test_same_day_accepted_only_after_kst_close():
+    now=datetime(2026,10,16,8,0,tzinfo=timezone.utc) # Fri 17:00 KST
+    data=rows()
+    r=confirmed_flow("000660",data,now=now)
+    assert r["latest_date"]=="20261016" and r["confirmed"]
+
+def test_same_day_during_session_is_excluded():
+    now=datetime(2026,10,16,2,0,tzinfo=timezone.utc) # Fri 11:00 KST
+    r=confirmed_flow("000660",rows(),now=now)
+    assert r["latest_date"]=="20261015"
