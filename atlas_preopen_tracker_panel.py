@@ -44,8 +44,7 @@ def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory,
                         last=st.session_state.get("atlas_nxt_last_attempt",-1e12)
                         thread=getattr(tape,"thread",None)
                         active=bool(thread and thread.is_alive())
-                        if (not active and time.monotonic()-last>=120 and
-                            getattr(tape,"market",None) in (None,"NX")):
+                        if not active and time.monotonic()-last>=120:
                             st.session_state.atlas_nxt_last_attempt=time.monotonic()
                             try:
                                 tape.start(tuple(c["symbol"] for c in frozen["candidates"][:5]),
