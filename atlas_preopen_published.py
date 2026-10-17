@@ -76,3 +76,13 @@ def load_published(*,get=requests.get,now=None):
         return validate_snapshot(response.json(),now=now)
     except (requests.RequestException,ValueError,TypeError):
         return None
+
+def should_use_automatic(existing, source, automatic):
+    """Keep today's manual override, but never carry it into another day."""
+    if not isinstance(automatic,dict) or not automatic.get("session_date"):
+        return False
+    if not isinstance(existing,dict) or existing.get("session_date")!=automatic["session_date"]:
+        return True
+    if source=="manual":
+        return False
+    return str(existing.get("frozen_at_utc",""))<str(automatic.get("frozen_at_utc",""))
