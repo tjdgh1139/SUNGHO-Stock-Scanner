@@ -1,0 +1,29 @@
+name: Audit KR automatic scanner quote mapping
+on:
+  push:
+    branches: [fix/atlas-kr-auto-scan-data-adapter]
+    paths: ['.github/workflows/atlas-kr-quote-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect KIS quote and automatic candidate contracts
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          s=Path('app.py').read_text(encoding='utf-8')
+          t=s.splitlines()
+          tree=ast.parse(s)
+          for n in ast.walk(tree):
+              if isinstance(n,ast.FunctionDef) and any(k in n.name for k in ('kis_quote','kis_us_movers','kis_us_quote','listing','kis_configured')):
+                  print('FUNC',n.name,n.lineno,n.end_lineno)
+                  for i in range(n.lineno-1,min(n.end_lineno,n.lineno+85)):
+                      print(f'{i+1}: {t[i][:190]}')
+          for i,line in enumerate(t):
+              if 'render_auto_candidate_board(' in line:
+                  print('AUTO_CALL',i+1,line[:180])
+          PY
