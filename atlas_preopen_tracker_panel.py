@@ -4,6 +4,7 @@ On-page only; polls each market once per minute during first five minutes.
 Frozen candidates are not silently replaced by dynamic discovery candidates.
 """
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import time
 import streamlit as st
 import pandas as pd
@@ -27,7 +28,7 @@ def capture_preopen(frame,market,now=None):
 def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory,
                            websocket_capability,kis_configured,secret_value):
     st.markdown("### 📌 A. 장전 스캔 후보 · 개장 1~5분 추적")
-    st.caption("스캔 버튼 불필요 · KST 07:00/07:55 자동 장전 후보 불러오기 · NXT/KRX 재검증 · 신규 후보는 B 화면")
+    st.caption("샌프란시스코 PT 기준 자동 운영 · KST 07:00/07:55 후보 게시 · NXT 08:00 재검증 · 신규 후보는 B 화면")
 
     @st.cache_data(ttl=45,show_spinner=False)
     def background_snapshot():
@@ -79,6 +80,10 @@ def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory,
                     else:
                         st.warning("인증된 NXT 실시간 체결 미수신 · KRX 가격으로 대체하지 않습니다.")
                 if market=="KR":
+                    stamp=datetime.fromisoformat(frozen["frozen_at_utc"].replace("Z","+00:00"))
+                    pt=stamp.astimezone(ZoneInfo("America/Los_Angeles")).strftime("%m/%d %H:%M %Z")
+                    kst=stamp.astimezone(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M KST")
+                    st.caption("장전 후보 생성 시각: "+pt+" / "+kst)
                     st.caption("후보 생성: "+str(frozen.get("source","장전 수동 스캔"))+
                                " · 1차/2차 "+str(frozen.get("phase","manual"))+
                                " · 검증 범위 "+str(frozen.get("coverage",{})))
