@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 from market_indicators import INDICATORS, get_indicator
+from treasury_yields import treasury_yields
 
 CORE = (
     "미국 변동성 VIX", "달러지수 DXY", "필라델피아 반도체 SOX",
@@ -25,6 +26,11 @@ def _read_indicators(names):
             except Exception:
                 rows.append({"지표":name,"상태":"미수신 · 조회 실패"})
     return sorted(rows,key=lambda r:names.index(r["지표"]))
+
+
+@st.cache_data(ttl=1800,show_spinner=False)
+def _read_treasury():
+    return treasury_yields()
 
 
 def render_global_indices():
@@ -63,4 +69,6 @@ def render_global_indices():
                             "상태":r.get("상태","미확인")})
             st.dataframe(pd.DataFrame(out),hide_index=True,use_container_width=True)
             st.caption("SOX는 반도체 지수, SOXL은 일일 3배 레버리지 ETF입니다. 서로 대체하지 않습니다.")
+            st.caption("미국 국채 2·10·30년 수익률: FRED 공식 일별 자료(실시간 아님)")
+            st.dataframe(pd.DataFrame(_read_treasury()),hide_index=True,use_container_width=True)
         panel()
