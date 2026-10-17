@@ -38,3 +38,4 @@ jobs:
             git commit -m "feat: add auto KR/US candidate board without manual scan"
             git push origin HEAD:feature/atlas-autonomous-kr-us-candidates
           fi
+# Verify 2s WS display and updated integration call
