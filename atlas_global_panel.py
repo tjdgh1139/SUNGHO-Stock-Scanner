@@ -42,11 +42,13 @@ def render_global_indices():
 
         @st.fragment(run_every="90s" if auto else None)
         def panel():
-            if st.button("🔄 중요 지수 조회",key="atlas_global_refresh"):
+            clicked = st.button("🔄 중요 지수 조회",key="atlas_global_refresh")
+            if clicked:
                 _read_indicators.clear()
+                _read_treasury.clear()
             if not st.session_state.get("atlas_global_loaded") and not auto:
                 st.caption("조회 버튼을 누르면 최신 확인 가능한 지연 시세를 표시합니다.")
-                if not st.session_state.get("atlas_global_refresh",False):
+                if not clicked:
                     return
             st.session_state.atlas_global_loaded=True
             rows=_read_indicators(names)
