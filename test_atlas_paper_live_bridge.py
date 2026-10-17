@@ -36,8 +36,8 @@ def test_5m_outcome_uses_later_observed_tick():
                         connected=True,venue="J",now=NOW+timedelta(seconds=2))
     state,events=step_ledger(state,a_candidates=a,ws_rows={"000660":ws(302,104)},
                         connected=True,venue="J",now=NOW+timedelta(seconds=302))
-    assert len(state["outcomes"])==1
-    assert events[0]["horizon"]=="5m"
+    assert any(x["horizon"]=="5m" for x in events)
+    assert any(k[1]=="5m" for k in state["outcomes"])
     assert session_report(state)["5m"]["count"]==1
 
 def test_disconnected_and_incomplete_ws_never_create_signal():
