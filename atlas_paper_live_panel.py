@@ -7,16 +7,32 @@ fills are disabled rather than fabricated.
 """
 from datetime import datetime, timezone
 import json
+import os
 import streamlit as st
+from atlas_paper_sqlite import load_state,save_events
 import pandas as pd
-from atlas_paper_live_bridge import empty_ledger,step_ledger,session_report
+from atlas_paper_live_bridge import empty_ledger,step_ledger,session_report,live_feed_health
 
 
 def render_paper_live_panel(tape_factory):
     st.markdown("### 🧪 ATLAS 자동 가상매매 검증")
     st.caption("스캔 버튼 불필요 · A 장전 고정 / B 실시간 후보 · 검증된 KIS 체결 후 별도 체결로 가상진입 · 실제 주문 없음")
+    db_path=os.environ.get("ATLAS_PAPER_DB_PATH","").strip()
+    namespace=os.environ.get("ATLAS_PAPER_NAMESPACE","").strip()
+    durable_configured=bool(db_path and namespace)
+    if "atlas_paper_pending_events" not in st.session_state:
+        st.session_state.atlas_paper_pending_events=[]
     if "atlas_paper_live_state" not in st.session_state:
-        st.session_state.atlas_paper_live_state=empty_ledger()
+        if durable_configured:
+            try:
+                st.session_state.atlas_paper_live_state=load_state(db_path,namespace)
+                st.session_state.atlas_paper_storage_error=None
+            except Exception as exc:
+                st.session_state.atlas_paper_live_state=empty_ledger()
+                st.session_state.atlas_paper_storage_error=type(exc).__name__
+        else:
+            st.session_state.atlas_paper_live_state=empty_ledger()
+            st.session_state.atlas_paper_storage_error=None
 
     @st.fragment(run_every="2s")
     def board():
@@ -33,10 +49,22 @@ def render_paper_live_panel(tape_factory):
             state,a_candidates=a,b_candidates=b,ws_rows=ws,
             connected=connected,venue=getattr(tape,"market",None),now=now)
         st.session_state.atlas_paper_live_state=state
+        if emitted:
+            st.session_state.atlas_paper_pending_events.extend(emitted)
+        if durable_configured and st.session_state.atlas_paper_pending_events:
+            try:
+                save_events(db_path,namespace,st.session_state.atlas_paper_pending_events)
+                st.session_state.atlas_paper_pending_events=[]
+                st.session_state.atlas_paper_storage_error=None
+            except (OSError,ValueError,RuntimeError,Exception) as exc:
+                st.session_state.atlas_paper_storage_error=type(exc).__name__
         c1,c2,c3=st.columns(3)
         c1.metric("가상 관찰 신호",len(state["signals"]))
         c2.metric("후속 체결 확인",len(state["fills"]))
         c3.metric("수익률 평가 기록",len(state["outcomes"]))
+        health=live_feed_health(ws,connected,getattr(tape,"market",None),now=now)
+        st.caption("실시간 데이터 상태: "+health["status"]+
+                   f" · 수신 {health['received_symbols']}종목 · 인증 {health['verified_symbols']}종목")
         if not connected:
             st.caption("KIS 실시간 WS 미연결 · 가상 진입 중단 (기존 기록 유지)")
         if error:
@@ -60,7 +88,13 @@ def render_paper_live_panel(tape_factory):
             f"{reports['5m']['count']}건 · 평균 순수익 {reports['5m']['avg_net_return_pct']:+.2f}% · 승률 {reports['5m']['win_rate_pct']:.1f}%"
             if reports["5m"]["count"] else "검증된 결과 없음"))
         st.caption("🇺🇸 미국 후보는 인증된 체결 시각과 호가 검증 전까지 가상 진입하지 않습니다.")
-        st.caption("기록은 현재 브라우저 세션에만 보관됩니다. 앱 종료 후 자동 추적·영구 저장은 아직 연결되지 않았습니다.")
+        if durable_configured and not st.session_state.atlas_paper_storage_error:
+            st.caption("SQLite 자동 저장 활성화 · 서버 영구 볼륨이 연결된 경우에만 재시작 후 보존됩니다.")
+        elif durable_configured:
+            st.warning("자동 저장 실패 · 세션 임시 기록만 유지 · "+str(st.session_state.atlas_paper_storage_error))
+        else:
+            st.caption("현재 세션에만 보관 · 영구 저장은 서버의 ATLAS_PAPER_DB_PATH와 ATLAS_PAPER_NAMESPACE 및 영구 볼륨 설정 필요")
+        st.caption("브라우저를 닫으면 신규 체결 추적이 중지됩니다. 상시 서버 수집기는 별도 작업입니다.")
         if state["events"]:
             payload="".join(json.dumps(e,ensure_ascii=False,sort_keys=True)+"\n"
                             for e in state["events"])

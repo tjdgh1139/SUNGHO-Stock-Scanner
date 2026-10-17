@@ -1,0 +1,26 @@
+name: ATLAS paper autosave and recovery CI
+on:
+  push:
+    branches: [feature/atlas-paper-autosave-recovery]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test requirements
+        run: python -m pip install -r requirements-test.txt
+      - name: Compile
+        run: python -m compileall -q app.py atlas_paper_sqlite.py atlas_paper_live_panel.py atlas_paper_live_bridge.py
+      - name: Test persistence and full paper pipeline
+        env:
+          KIS_APP_KEY: ""
+          KIS_APP_SECRET: ""
+        run: python -m pytest -q test_atlas_paper_sqlite.py test_atlas_paper_feed_health.py test_atlas_paper_live_bridge.py test_atlas_paper_live_smoke.py test_atlas_paper_ledger.py test_atlas_paper_store.py test_atlas_ws_panel.py test_atlas_preopen_rollover.py test_regression.py
