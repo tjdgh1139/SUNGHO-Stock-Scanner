@@ -27,7 +27,7 @@ def render_paper_live_panel(tape_factory):
             try:
                 st.session_state.atlas_paper_live_state=load_state(db_path,namespace)
                 st.session_state.atlas_paper_storage_error=None
-            except (OSError,ValueError,RuntimeError,Exception) as exc:
+            except Exception as exc:
                 st.session_state.atlas_paper_live_state=empty_ledger()
                 st.session_state.atlas_paper_storage_error=type(exc).__name__
         else:
