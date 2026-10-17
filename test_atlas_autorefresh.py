@@ -17,7 +17,7 @@ def test_krx_closed_after_close():
     assert not krx_regular_open(utc("2026-10-16T06:30:00Z"))
 
 def test_refresh_interval():
-    assert POLL_SECONDS == 30
+    assert POLL_SECONDS == 15
 
 def test_sidebar_streamlit_smoke_no_secrets():
     from pathlib import Path
