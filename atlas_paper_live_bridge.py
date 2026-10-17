@@ -155,3 +155,19 @@ def step_ledger(state, *, a_candidates=(), b_candidates=(), ws_rows=None,
 def session_report(state):
     outcomes=list(state["outcomes"].values())
     return {h:performance_summary(outcomes,horizon=h) for h in HORIZONS}
+
+
+def live_feed_health(ws_rows,connected,venue,*,now=None):
+    """Make stale/absent WS data visible instead of showing an empty ranking."""
+    now=now or datetime.now(timezone.utc)
+    rows=ws_rows or {}
+    valid=sum(validated_kr_trade(str(code),row,now=now,venue=venue) is not None
+              for code,row in rows.items()) if connected and venue in ("J","NX") else 0
+    if not connected:
+        status="미연결"
+    elif valid==0:
+        status="연결됨 · 인증된 최신 체결 없음"
+    else:
+        status=f"정상 확인 {valid}종목"
+    return {"connected":bool(connected),"received_symbols":len(rows),
+            "verified_symbols":valid,"status":status}
