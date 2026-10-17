@@ -1,0 +1,20 @@
+name: ATLAS layout anchors
+on:
+  push:
+    branches: [feature/atlas-compact-fast-dashboard]
+    paths: ['.github/workflows/atlas-layout-anchors.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Locate dashboard insertion point
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('app.py').read_text(encoding='utf-8').splitlines()
+          for i in range(2730,min(2840,len(s))):
+              print(f'{i+1}: {s[i][:200]}')
+          PY
