@@ -4,9 +4,11 @@ On-page only; polls each market once per minute during first five minutes.
 Frozen candidates are not silently replaced by dynamic discovery candidates.
 """
 from datetime import datetime, timezone
+import time
 import streamlit as st
 import pandas as pd
 from atlas_preopen_monitor import freeze_candidates,minute_after_open,minute_record
+from atlas_nxt_revalidation import market_phase,rerank_preopen_on_nxt
 
 
 def capture_preopen(frame,market,now=None):
@@ -20,7 +22,8 @@ def capture_preopen(frame,market,now=None):
     return frozen
 
 
-def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory):
+def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory,
+                           websocket_capability,kis_configured,secret_value):
     st.markdown("### 📌 A. 장전 스캔 후보 · 개장 1~5분 추적")
     st.caption("장전에 수동 스캔하면 후보가 고정되고, 개장 후 매분 시세·진입/손절/목표를 재평가합니다. 신규 급등 후보는 별도 B 화면에 표시됩니다.")
 
@@ -33,6 +36,35 @@ def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory)
                 if not frozen or not frozen.get("candidates"):
                     st.info("장전 스캔 결과가 아직 고정되지 않았습니다.")
                     continue
+                if market=="KR" and market_phase(now)=="NXT_PRE":
+                    st.markdown("**NXT 프리마켓 08:00~08:50 · 장전 후보 즉시 재검증**")
+                    tape=tape_factory()
+                    # Reuse one KIS tape, never interrupt a running KRX session.
+                    if websocket_capability() and kis_configured():
+                        last=st.session_state.get("atlas_nxt_last_attempt",-1e12)
+                        thread=getattr(tape,"thread",None)
+                        active=bool(thread and thread.is_alive())
+                        if not active and time.monotonic()-last>=120:
+                            st.session_state.atlas_nxt_last_attempt=time.monotonic()
+                            try:
+                                tape.start(tuple(c["symbol"] for c in frozen["candidates"][:5]),
+                                           secret_value("KIS_APP_KEY"),
+                                           secret_value("KIS_APP_SECRET"),market="NX")
+                            except Exception:
+                                pass
+                    ws,connected,_=tape.snapshots()
+                    if connected and getattr(tape,"market",None)=="NX":
+                        nxt=rerank_preopen_on_nxt(frozen,ws,now=now,limit=5)
+                    else:
+                        nxt=[]
+                    if nxt:
+                        st.dataframe(pd.DataFrame([{
+                            "재선정 순위":i,"종목":x["name"],"NXT 가격":x["nxt_price"],
+                            "체결강도":x["nxt_strength"],"재평가 점수":x["recheck_score"],
+                            "판정":x["status"],"수신 경과(초)":x["nxt_age_seconds"],
+                        } for i,x in enumerate(nxt,1)]),hide_index=True,use_container_width=True)
+                    else:
+                        st.warning("인증된 NXT 실시간 체결 미수신 · KRX 가격으로 대체하지 않습니다.")
                 minute=minute_after_open(now,market)
                 st.caption("고정 "+frozen["frozen_at_utc"]+" · 후보 "+str(len(frozen["candidates"]))+"종목")
                 if minute is None:
