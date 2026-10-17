@@ -55,3 +55,13 @@ def test_us_and_kr_hours_distinct():
     assert not us_regular_hours(datetime(2026,10,16,1,tzinfo=timezone.utc))
     assert us_regular_hours(datetime(2026,10,16,15,tzinfo=timezone.utc))
     assert KR_BATCH<=8
+
+def test_nxt_early_liquidity_floor_is_explicit_and_watch_only():
+    from atlas_prebreakout import rank_prebreakout_kr
+    q=kr_quote()
+    q["장중거래대금"]=250_000_000
+    assert kr_candidate("000660","SK하이닉스",q,NOW) is None
+    item=kr_candidate("000660","SK하이닉스",q,NOW,min_turnover=200_000_000)
+    assert item and item["상태"].startswith("상승 관찰")
+    assert rank_prebreakout_kr([item],now=NOW)==[]
+    assert len(rank_prebreakout_kr([item],now=NOW,min_turnover=200_000_000))==1

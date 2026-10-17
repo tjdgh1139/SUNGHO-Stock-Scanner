@@ -4,11 +4,13 @@ On-page only; polls each market once per minute during first five minutes.
 Frozen candidates are not silently replaced by dynamic discovery candidates.
 """
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import time
 import streamlit as st
 import pandas as pd
 from atlas_preopen_monitor import freeze_candidates,minute_after_open,minute_record
 from atlas_nxt_revalidation import market_phase,rerank_preopen_on_nxt
+from atlas_preopen_published import load_published
 
 
 def capture_preopen(frame,market,now=None):
@@ -19,22 +21,34 @@ def capture_preopen(frame,market,now=None):
     frozen=freeze_candidates(frame.to_dict("records"),market,now=now)
     if frozen and frozen["candidates"]:
         st.session_state["atlas_frozen_"+market]=frozen
+        st.session_state["atlas_preopen_source_"+market]="manual"
     return frozen
 
 
 def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory,
                            websocket_capability,kis_configured,secret_value):
     st.markdown("### 📌 A. 장전 스캔 후보 · 개장 1~5분 추적")
-    st.caption("장전에 수동 스캔하면 후보가 고정되고, 개장 후 매분 시세·진입/손절/목표를 재평가합니다. 신규 급등 후보는 별도 B 화면에 표시됩니다.")
+    st.caption("샌프란시스코 PT 기준 자동 운영 · KST 07:00/07:55 후보 게시 · NXT 08:00 재검증 · 신규 후보는 B 화면")
+
+    @st.cache_data(ttl=45,show_spinner=False)
+    def background_snapshot():
+        return load_published()
 
     @st.fragment(run_every="5s")
     def panel():
         now=datetime.now(timezone.utc)
+        automatic=background_snapshot()
+        if automatic and st.session_state.get("atlas_preopen_source_KR")!="manual":
+            existing=st.session_state.get("atlas_frozen_KR")
+            if (not existing or existing.get("session_date")!=automatic["session_date"] or
+                existing.get("frozen_at_utc","")<automatic["frozen_at_utc"]):
+                st.session_state["atlas_frozen_KR"]=automatic
+                st.session_state["atlas_preopen_source_KR"]="automatic"
         for market,label in (("KR","🇰🇷 한국"),("US","🇺🇸 미국")):
             frozen=st.session_state.get("atlas_frozen_"+market)
             with st.expander(label+" · 장전 고정 후보",expanded=True):
                 if not frozen or not frozen.get("candidates"):
-                    st.info("장전 스캔 결과가 아직 고정되지 않았습니다.")
+                    st.info("검증된 장전 자동 후보 아직 없음 · 예약 작업/시세 공급자 확인 필요")
                     continue
                 if market=="KR" and market_phase(now)=="NXT_PRE":
                     st.markdown("**NXT 프리마켓 08:00~08:50 · 장전 후보 즉시 재검증**")
@@ -65,6 +79,14 @@ def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory,
                         } for i,x in enumerate(nxt,1)]),hide_index=True,use_container_width=True)
                     else:
                         st.warning("인증된 NXT 실시간 체결 미수신 · KRX 가격으로 대체하지 않습니다.")
+                if market=="KR":
+                    stamp=datetime.fromisoformat(frozen["frozen_at_utc"].replace("Z","+00:00"))
+                    pt=stamp.astimezone(ZoneInfo("America/Los_Angeles")).strftime("%m/%d %H:%M %Z")
+                    kst=stamp.astimezone(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M KST")
+                    st.caption("장전 후보 생성 시각: "+pt+" / "+kst)
+                    st.caption("후보 생성: "+str(frozen.get("source","장전 수동 스캔"))+
+                               " · 1차/2차 "+str(frozen.get("phase","manual"))+
+                               " · 검증 범위 "+str(frozen.get("coverage",{})))
                 minute=minute_after_open(now,market)
                 st.caption("고정 "+frozen["frozen_at_utc"]+" · 후보 "+str(len(frozen["candidates"]))+"종목")
                 if minute is None:

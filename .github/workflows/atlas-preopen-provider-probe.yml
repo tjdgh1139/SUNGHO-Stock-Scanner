@@ -1,0 +1,50 @@
+name: ATLAS preopen historical provider probe
+on:
+  push:
+    branches: [feature/atlas-background-preopen]
+    paths: ['.github/workflows/atlas-preopen-provider-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install historical provider
+        run: python -m pip install finance-datareader pandas
+      - name: Check real historical quote coverage
+        run: |
+          python - <<'PY'
+          from datetime import datetime,timedelta,timezone
+          import FinanceDataReader as fdr
+          from atlas_preopen_background import score_history
+          now=datetime.now(timezone.utc)
+          for code,name in [('005930','Samsung'),('000660','Hynix'),('009150','Samsung Electro')]:
+              try:
+                  df=fdr.DataReader(code,(now-timedelta(days=90)).strftime('%Y-%m-%d'))
+                  print(code,'bars',len(df),'last_date',str(df.index[-1].date()) if len(df) else 'none',
+                        'schema',list(df.columns))
+              except Exception as exc:
+                  print(code,'unavailable',type(exc).__name__)
+          PY
+      - name: Dry-run 24-stock TOP5 scoring for Monday 07:00 KST
+        run: |
+          python - <<'PY'
+          import csv
+          from datetime import datetime,timezone
+          import FinanceDataReader as fdr
+          from atlas_preopen_background import build_snapshot
+          now=datetime(2026,10,18,22,0,tzinfo=timezone.utc)
+          with open('config/atlas_preopen_universe.csv',encoding='utf-8') as f:
+              universe=[(r['code'],r['name'],r['sector']) for r in csv.DictReader(f)]
+          snapshot=build_snapshot(universe,lambda code:fdr.DataReader(code,'2026-07-20'),now=now)
+          print('Attempted',snapshot['coverage']['attempted'],'validated',snapshot['coverage']['validated'])
+          for c in snapshot['candidates']:
+              print(c['symbol'],c['name'],c['last_trading_date'],c['score'],c['status'])
+          assert snapshot['coverage']['validated']>0, 'No valid historical candidates from public feed'
+          PY

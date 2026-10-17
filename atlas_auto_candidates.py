@@ -53,7 +53,7 @@ def normalized_kr_universe(listing,limit=KR_UNIVERSE_LIMIT):
     return out
 
 
-def kr_candidate(code,name,quote,now=None):
+def kr_candidate(code,name,quote,now=None,*,min_turnover=3_000_000_000):
     now=now or datetime.now(timezone.utc)
     try:
         stamp=datetime.fromisoformat(str(quote["quote_received_utc"]).replace("Z","+00:00"))
@@ -63,7 +63,7 @@ def kr_candidate(code,name,quote,now=None):
         value=float(quote["장중거래대금"])
         volume=float(quote["장중거래량"])
         if not (0<=age<=MAX_AGE_SECONDS and 0<px<1e9 and
-                0<volume and value>=3_000_000_000 and 0.2<=pct<=24):
+                0<volume and value>=min_turnover and 0.2<=pct<=24):
             return None
         if not all(math.isfinite(x) for x in (px,pct,value,volume)):
             return None
