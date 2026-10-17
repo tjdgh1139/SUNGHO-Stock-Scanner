@@ -24,12 +24,12 @@ jobs:
       - name: Install test requirements
         run: python -m pip install -r requirements-test.txt
       - name: Compile
-        run: python -m compileall -q app.py atlas_ws_panel.py atlas_global_panel.py market_indicators.py
+        run: python -m compileall -q app.py atlas_ws_panel.py atlas_global_panel.py market_indicators.py treasury_yields.py
       - name: Run full regression and new safety tests
         env:
           KIS_APP_KEY: ""
           KIS_APP_SECRET: ""
-        run: python -m pytest -q test_regression.py test_flow_signals.py test_flow_adapter.py test_atlas_kis_readonly.py test_atlas_autorefresh.py test_futures_quotes.py test_market_indicators.py test_atlas_ws_panel.py
+        run: python -m pytest -q test_regression.py test_flow_signals.py test_flow_adapter.py test_atlas_kis_readonly.py test_atlas_autorefresh.py test_futures_quotes.py test_market_indicators.py test_atlas_ws_panel.py test_treasury_yields.py
       - name: Commit integrated app if tested
         run: |
           if ! git diff --quiet -- app.py; then
