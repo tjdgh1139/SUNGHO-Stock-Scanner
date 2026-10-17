@@ -51,3 +51,11 @@ def test_token_missing_secrets():
 def test_token_success():
     assert token_request("key","secret",
            post=lambda *a,**k:Response({"access_token":"token"}))=="token"
+
+def test_monitor_page_without_secrets_fails_closed():
+    from pathlib import Path
+    from streamlit.testing.v1 import AppTest
+    page = Path(__file__).with_name("pages") / "01_ATLAS_Live_Monitor.py"
+    app = AppTest.from_file(str(page), default_timeout=20).run()
+    assert not app.exception
+    assert any("KIS 인증정보 미설정" in x.message for x in app.error)
