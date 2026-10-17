@@ -2683,9 +2683,20 @@ def delayed_macro_snapshot():
     rows.extend([{"지표":label,"상태":"실시간 공급자·현재 계약 연결 필요"} for label in ("NASDAQ100 선물","S&P500 선물","WTI 선물")])
     return pd.DataFrame(rows)
 
+@st.cache_data(ttl=60,show_spinner=False)
+def cached_us_futures_snapshot():
+    from futures_quotes import futures_snapshot
+    return futures_snapshot()
+
 def macro_snapshot():
     daily=delayed_macro_snapshot()
     live=kis_index_snapshot()+[domestic_future_snapshot(),night_future_snapshot()]
+    # US continuous futures are public delayed quotes, not authenticated live ticks.
+    try:
+        from futures_quotes import futures_snapshot
+        live.extend(cached_us_futures_snapshot())
+    except Exception:
+        pass
     if live:
         labels={r["지표"] for r in live}
         return pd.concat([pd.DataFrame(live),daily[~daily["지표"].isin(labels)]],ignore_index=True)
