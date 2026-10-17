@@ -38,3 +38,4 @@ jobs:
             git commit -m "feat: track frozen preopen scan candidates each opening minute"
             git push origin HEAD:feature/atlas-preopen-minute-monitor
           fi
+# Verify historical minute log and latest integration
