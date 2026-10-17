@@ -55,3 +55,15 @@ def test_no_data_no_candidates():
     r=build_snapshot([("000660","SK","semi")],lambda _:None,now=FIRST)
     assert r["candidates"]==[]
     assert validate_snapshot(r,now=FIRST) is None
+
+from atlas_market_calendar import krx_session
+
+def test_krx_calendar_skips_weekends_and_holidays():
+    assert krx_session(datetime(2026,10,19).date())
+    assert not krx_session(datetime(2026,10,18).date())
+    assert not krx_session(datetime(2026,10,9).date())
+
+def test_calendar_unavailable_is_not_assumed_open():
+    class Bad:
+        def is_session(self,d):raise ValueError("unavailable")
+    assert not krx_session(datetime(2026,10,19).date(),calendar=Bad())
