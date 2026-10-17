@@ -121,7 +121,7 @@ def render_compact_dashboard(tape_factory, websocket_capability, kis_configured,
             st.caption("실시간 연결 상태: "+str(error)[:90])
     board()
 
-    with st.expander("🌎 핵심 글로벌 지표 한눈에 보기",expanded=False):
+    with st.expander("🌎 핵심 글로벌 지표 한눈에 보기",expanded=True):
         if st.button("글로벌 지표 조회/갱신",key="atlas_compact_macro_button"):
             _quick_macro.clear()
         rows=_quick_macro()
