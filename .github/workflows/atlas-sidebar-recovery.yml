@@ -1,0 +1,27 @@
+name: ATLAS emergency sidebar recovery
+on:
+  push:
+    paths: ['scripts/fix_broken_page_link.py', '.github/workflows/atlas-sidebar-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Remove failing page_link
+        run: python scripts/fix_broken_page_link.py
+      - name: Verify syntax
+        run: python -m py_compile app.py
+      - name: Commit recovery
+        run: |
+          if ! git diff --quiet -- app.py; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app.py
+            git commit -m "fix: prevent StreamlitPageNotFoundError in main scanner"
+            git push origin HEAD:main
+          fi
