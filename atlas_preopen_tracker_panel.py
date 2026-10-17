@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import streamlit as st
 import pandas as pd
 from atlas_preopen_monitor import freeze_candidates,minute_after_open,minute_record
+from atlas_nxt_revalidation import market_phase,rerank_preopen_on_nxt
 
 
 def capture_preopen(frame,market,now=None):
@@ -33,6 +34,22 @@ def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory)
                 if not frozen or not frozen.get("candidates"):
                     st.info("장전 스캔 결과가 아직 고정되지 않았습니다.")
                     continue
+                if market=="KR" and market_phase(now)=="NXT_PRE":
+                    st.markdown("**NXT 프리마켓 08:00~08:50 · 장전 후보 즉시 재검증**")
+                    tape=tape_factory()
+                    ws,connected,_=tape.snapshots()
+                    if connected and getattr(tape,"market",None)=="NX":
+                        nxt=rerank_preopen_on_nxt(frozen,ws,now=now,limit=5)
+                    else:
+                        nxt=[]
+                    if nxt:
+                        st.dataframe(pd.DataFrame([{
+                            "재선정 순위":i,"종목":x["name"],"NXT 가격":x["nxt_price"],
+                            "체결강도":x["nxt_strength"],"재평가 점수":x["recheck_score"],
+                            "판정":x["status"],"수신 경과(초)":x["nxt_age_seconds"],
+                        } for i,x in enumerate(nxt,1)]),hide_index=True,use_container_width=True)
+                    else:
+                        st.warning("인증된 NXT 실시간 체결 미수신 · KRX 가격으로 대체하지 않습니다.")
                 minute=minute_after_open(now,market)
                 st.caption("고정 "+frozen["frozen_at_utc"]+" · 후보 "+str(len(frozen["candidates"]))+"종목")
                 if minute is None:
