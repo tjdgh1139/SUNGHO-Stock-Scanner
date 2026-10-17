@@ -123,3 +123,25 @@ def fresh_ranked(rows,now=None,max_items=5):
         except (KeyError,TypeError,ValueError):
             continue
     return sorted(fresh,key=lambda x:(x["점수"],x["거래대금"]),reverse=True)[:max_items]
+
+
+def live_ws_to_kr_quote(live):
+    """Map authenticated WS fields into the existing KR momentum scanner.
+
+    The WebSocket uses trade_received_utc, NOT quote_received_utc. The latter
+    is a REST adapter field. Never silently stamp a missing WS trade as now.
+    """
+    if not isinstance(live,dict) or not live.get("trade_received_utc"):
+        return None
+    required=("현재가","등락%","장중거래대금","장중거래량")
+    if any(live.get(key) is None for key in required):
+        return None
+    return {
+        "현재가":live["현재가"],"장중등락%":live["등락%"],
+        "장중거래대금":live["장중거래대금"],
+        "장중거래량":live["장중거래량"],
+        "quote_received_utc":live["trade_received_utc"],
+        "장중고가":live.get("장중고가"),
+        "체결강도":live.get("체결강도"),
+        "프로그램순매수대금":live.get("프로그램순매수대금"),
+    }
