@@ -38,3 +38,4 @@ jobs:
             git commit -m "feat: display delayed US futures in ATLAS macro panel"
             git push origin HEAD:feature/atlas-30s-auto-refresh
           fi
+# Rerun after corrected KST boundary test
