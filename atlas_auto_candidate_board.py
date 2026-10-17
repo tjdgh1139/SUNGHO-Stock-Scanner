@@ -178,6 +178,14 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
         kr=rank_prebreakout_kr(kr,now=datetime.now(timezone.utc),limit=5,
                                min_turnover=200_000_000 if nxt_open else 3_000_000_000) if kr_active else []
         us=rank_prebreakout_us(us,now=datetime.now(timezone.utc),limit=5) if us_open else []
+        # Expose the exact ranked candidates to the paper-only observer.
+        # No buy order or fabricated fill is generated here.
+        st.session_state["atlas_paper_b_kr_candidates"]=[
+            dict(x, symbol=x["코드"]) for x in kr
+        ]
+        st.session_state["atlas_paper_b_us_candidates"]=[
+            dict(x, symbol=x["코드"]) for x in us
+        ]
         left,right=st.columns(2,gap="medium")
         with left:
             st.markdown("#### 🇰🇷 B. 한국 신규 전조 후보 TOP 5")
