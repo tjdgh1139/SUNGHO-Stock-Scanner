@@ -57,3 +57,4 @@ jobs:
             git push origin HEAD:main
           fi
 # Regression includes PT/KST generated-time labels and auto-load guards
+# Final preopen calendar and PT timezone regression
