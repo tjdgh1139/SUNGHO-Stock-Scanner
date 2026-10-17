@@ -1,0 +1,26 @@
+name: ATLAS futures source audit
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/atlas-futures-audit.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect futures and macro provider paths
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('app.py').read_text(encoding='utf-8').splitlines()
+          keys=['NASDAQ100 선물','S&P500 선물','WTI 선물','연결 미완료','미국10년금리','market_indicators','market_snapshot','macro']
+          selected=[]
+          for i,line in enumerate(t):
+              if any(k in line for k in keys):
+                  selected.append(i)
+          for i in sorted(set(j for k in selected for j in range(max(0,k-6),min(len(t),k+8)))):
+              if i<3300:
+                  print(f'{i+1:04d}: {t[i][:220]}')
+          PY
