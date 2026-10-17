@@ -159,9 +159,12 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                     st.caption("검증 가능한 초기 상승 후보 없음")
             st.caption("최대 3종목씩, 조건 미달 시 빈칸. 국내 순환 조회·미국 순위 첫 페이지에 한정됩니다.")
         st.divider()
+        # Separate dynamically reranked TOP5 from the frozen pre-open watchlist.
+        kr=rank_prebreakout_kr(kr,now=datetime.now(timezone.utc),limit=5) if kr_open else []
+        us=rank_prebreakout_us(us,now=datetime.now(timezone.utc),limit=5) if us_open else []
         left,right=st.columns(2,gap="medium")
         with left:
-            st.markdown("#### 🇰🇷 한국 급등 유력 *관찰* 후보")
+            st.markdown("#### 🇰🇷 B. 한국 신규 전조 후보 TOP 5")
             covered=st.session_state.atlas_auto_kr_universe
             cursor=st.session_state.atlas_auto_kr_cursor
             st.caption(f"KRX {'장중' if kr_open else '장외'} · 순환 범위 {len(covered):,}종목 · 순환 조회 시도 {len(st.session_state.atlas_auto_kr_scanned):,}개 · 회당 {KR_BATCH}종목")
@@ -169,12 +172,12 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                 st.dataframe(pd.DataFrame([{
                     "종목":x["종목"],"가격(원)":int(x["현재가"]),
                     "등락%":x["등락%"],"거래대금(억)":round(x["거래대금"]/1e8,1),
-                    "관찰점수":x["점수"],"판정":"WATCH",
+                    "전조점수":x["예비점수"],"판정":"WATCH",
                 } for x in kr]),hide_index=True,use_container_width=True)
             else:
-                st.info("현재 조건·수신시각을 통과한 한국 후보 없음")
+                st.info("현재 검증 가능한 한국 상승 전조 후보 없음")
         with right:
-            st.markdown("#### 🇺🇸 미국 급등 유력 *관찰* 후보")
+            st.markdown("#### 🇺🇸 B. 미국 신규 전조 후보 TOP 5")
             st.caption("미국 정규장 "+("운영" if us_open else "시간 외")+
                        " · 3개 거래소 급등 순위 첫 페이지 · 전체 종목 전수 검색 아님")
             if us:
@@ -185,8 +188,9 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                     "관찰점수":x["점수"],"판정":"WATCH",
                 } for x in us]),hide_index=True,use_container_width=True)
             else:
-                st.info("현재 조건·수신시각을 통과한 미국 후보 없음")
-        st.caption("수익을 보장하는 BUY 신호가 아닙니다. "
+                st.info("현재 검증 가능한 미국 상승 전조 후보 없음")
+        st.caption("B 후보는 2초마다 재평가되고 오래된 후보는 자동 제외됩니다. 검증된 전 시장 실시간 순위가 아닙니다. "
+                   "수익을 보장하는 BUY 신호가 아닙니다. "
                    "REST 수신시각은 체결시각이 아니며 외국인·기관 수급 및 상대 거래량 검증은 별도입니다. "
                    "시장 휴장일은 추가 확인 필요. 페이지를 닫으면 자동 스캔이 중지됩니다.")
     board()

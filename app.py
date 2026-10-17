@@ -2754,6 +2754,8 @@ from atlas_foreign_flow_panel import render_foreign_flow_panel
 render_foreign_flow_panel(st.session_state.get("scan",pd.DataFrame()),live_tape,secret_value)
 from atlas_opening_flow_panel import render_opening_flow_panel
 render_opening_flow_panel(live_tape)
+from atlas_preopen_tracker_panel import capture_preopen, render_preopen_tracker
+render_preopen_tracker(kis_quote,kis_us_quote,US_SYMBOLS,live_tape)
 from atlas_auto_candidate_board import render_auto_candidate_board
 render_auto_candidate_board(listing,kis_quote,kis_us_movers,kis_configured,
                             live_tape,websocket_capability,secret_value)
@@ -2845,10 +2847,12 @@ if scan_action.button("🚀 지금 스캔",type="primary",use_container_width=Tr
             started=time.monotonic()
             result = run_scan(markets, per_market, min_value_eok*100_000_000, min_score)
             st.session_state.scan = result
+            capture_preopen(result,"KR")
             if include_us:
                 status.info("한국 후보 분석 완료 · 미국 관심종목 분석 중")
                 us_started=time.monotonic()
                 st.session_state.us_scan=run_us_scan(us_symbols,min_score,us_extra_map)
+                capture_preopen(st.session_state.us_scan,"US")
                 try:
                     save_scan_snapshot(st.session_state.us_scan,scan_type="us_watchlist_scan",audit_file=AUDIT_DIR/"us_scan_snapshots.csv")
                 except Exception as error:
