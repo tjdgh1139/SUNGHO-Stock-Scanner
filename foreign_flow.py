@@ -3,7 +3,7 @@
 Official KIS inquire-investor: today's row is only published after market close.
 Never claim that this endpoint provides real-time foreign net buying.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as clock_time
 from zoneinfo import ZoneInfo
 import math
 import requests
@@ -30,13 +30,16 @@ def investor_history(code,key,secret,token,*,get=requests.get):
 
 def confirmed_flow(code,raw,*,now=None):
     now=now or datetime.now(timezone.utc)
-    today=now.astimezone(KST).strftime("%Y%m%d")
+    local=now.astimezone(KST)
+    today=local.strftime("%Y%m%d")
+    # KIS publishes the current day only after the market closes.
+    allow_today=local.weekday()<5 and local.time()>=clock_time(16,0)
     days={}
     for row in raw:
         try:
             date=str(row["stck_bsop_date"])
             # Fail closed on current-day intraday estimates; the API is EOD-only.
-            if len(date)!=8 or not date.isdigit() or date>=today:
+            if len(date)!=8 or not date.isdigit() or date>today or (date==today and not allow_today):
                 continue
             foreign=int(row["frgn_ntby_qty"])
             institution=int(row["orgn_ntby_qty"])
