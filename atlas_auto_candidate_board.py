@@ -148,7 +148,7 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                            "장중고가":live.get("장중고가"),
                            "체결강도":verified["strength"],
                            "프로그램순매수대금":live.get("프로그램순매수대금")}
-                item=kr_candidate(symbol,name,nxt_quote,now=datetime.now(timezone.utc))
+                item=kr_candidate(symbol,name,nxt_quote,now=datetime.now(timezone.utc),min_turnover=200_000_000)
                 if item:
                     item["source"]="KIS WS NXT · authenticated venue, no investor inference"
                     record_kr_item(symbol,item,nxt_quote,"NXT")
@@ -156,7 +156,8 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
         us=fresh_ranked(st.session_state.atlas_auto_us_rows,datetime.now(timezone.utc))
         # Early prebreakout WATCH shortlist, not today's top gainers.
         pre_kr=rank_prebreakout_kr(list(st.session_state.atlas_auto_kr_seen.values()),
-                                   now=datetime.now(timezone.utc),limit=3) if kr_active else []
+                                   now=datetime.now(timezone.utc),limit=3,
+                                   min_turnover=200_000_000 if nxt_open else 3_000_000_000) if kr_active else []
         pre_us=rank_prebreakout_us(st.session_state.atlas_auto_us_rows,
                                    now=datetime.now(timezone.utc),limit=3) if us_open else []
         with st.container(border=True):
@@ -182,7 +183,8 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
             st.caption("최대 3종목씩, 조건 미달 시 빈칸. 국내 순환 조회·미국 순위 첫 페이지에 한정됩니다.")
         st.divider()
         # Separate dynamically reranked TOP5 from the frozen pre-open watchlist.
-        kr=rank_prebreakout_kr(kr,now=datetime.now(timezone.utc),limit=5) if kr_active else []
+        kr=rank_prebreakout_kr(kr,now=datetime.now(timezone.utc),limit=5,
+                               min_turnover=200_000_000 if nxt_open else 3_000_000_000) if kr_active else []
         us=rank_prebreakout_us(us,now=datetime.now(timezone.utc),limit=5) if us_open else []
         left,right=st.columns(2,gap="medium")
         with left:
