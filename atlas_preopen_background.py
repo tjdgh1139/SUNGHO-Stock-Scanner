@@ -38,7 +38,7 @@ def score_history(symbol,name,sector,history,*,now):
         last_date=df.index[-1]
         date=last_date.date() if hasattr(last_date,"date") else last_date
         age=(now.astimezone(KST).date()-date).days
-        if not 0<=age<=MAX_EOD_AGE_DAYS:
+        if not 1<=age<=MAX_EOD_AGE_DAYS:
             return None
         closes=[float(x) for x in df["Close"]]
         volumes=[float(x) for x in df["Volume"]]
