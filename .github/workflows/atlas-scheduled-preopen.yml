@@ -23,9 +23,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install test dependencies
-        run: python -m pip install -r requirements-test.txt
+        run: python -m pip install -r requirements-test.txt "exchange-calendars>=4.13,<5"
       - name: Compile
-        run: python -m compileall -q atlas_preopen_background.py atlas_preopen_published.py atlas_preopen_job.py atlas_preopen_tracker_panel.py atlas_auto_candidate_board.py atlas_auto_candidates.py atlas_prebreakout.py
+        run: python -m compileall -q atlas_preopen_background.py atlas_preopen_published.py atlas_preopen_job.py atlas_market_calendar.py atlas_preopen_tracker_panel.py atlas_auto_candidate_board.py atlas_auto_candidates.py atlas_prebreakout.py
       - name: Test preopen safety and scheduling
         run: python -m pytest -q test_atlas_background_preopen.py test_atlas_preopen_monitor.py test_atlas_auto_candidates.py test_atlas_prebreakout.py test_atlas_nxt_revalidation.py
   publish:
@@ -42,7 +42,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install public historical price provider
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt "exchange-calendars>=4.13,<5"
       - name: Build source-validated preopen candidates
         run: python atlas_preopen_job.py
       - name: Commit only if a verified snapshot exists
