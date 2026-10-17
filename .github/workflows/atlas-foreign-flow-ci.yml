@@ -1,0 +1,42 @@
+name: ATLAS foreign flow integration
+on:
+  push:
+    branches: [feature/atlas-foreign-flow-candidates]
+    paths: ['.github/workflows/atlas-foreign-flow-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Embed foreign-flow panel
+        run: python scripts/integrate_foreign_flow.py
+      - name: Install dependencies
+        run: python -m pip install -r requirements-test.txt
+      - name: Compile
+        run: python -m compileall -q app.py foreign_flow.py atlas_foreign_flow_panel.py
+      - name: Run tests
+        env:
+          KIS_APP_KEY: ""
+          KIS_APP_SECRET: ""
+        run: python -m pytest -q test_regression.py test_flow_signals.py test_flow_adapter.py test_atlas_kis_readonly.py test_atlas_autorefresh.py test_futures_quotes.py test_market_indicators.py test_atlas_ws_panel.py test_treasury_yields.py test_atlas_compact_dashboard.py test_atlas_compact_smoke.py test_foreign_flow.py
+      - name: Commit integrated app only if tests pass
+        run: |
+          if ! git diff --quiet -- app.py; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app.py
+            git commit -m "feat: add verified EOD foreign institutional flow candidate ranking"
+            git push origin HEAD:feature/atlas-foreign-flow-candidates
+          fi
+# Verify post-close investor data handling
+# Confirm missing-secret graceful handling
