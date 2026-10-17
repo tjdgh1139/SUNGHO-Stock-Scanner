@@ -1,0 +1,42 @@
+name: ATLAS paper live bridge integration
+on:
+  push:
+    branches: [feature/atlas-paper-live-bridge]
+    paths: ['.github/workflows/atlas-paper-live-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Integrate paper-only panel
+        run: python scripts/integrate_paper_live_panel.py
+      - name: Install tests
+        run: python -m pip install -r requirements-test.txt
+      - name: Compile scanner and paper engine
+        run: python -m compileall -q app.py atlas_paper_live_bridge.py atlas_paper_live_panel.py atlas_auto_candidate_board.py
+      - name: Test paper live pipeline and regressions
+        env:
+          KIS_APP_KEY: ""
+          KIS_APP_SECRET: ""
+        run: python -m pytest -q test_atlas_paper_ledger.py test_atlas_paper_store.py test_atlas_paper_live_bridge.py test_atlas_paper_live_smoke.py test_atlas_auto_candidates.py test_atlas_ws_quote_adapter.py test_atlas_preopen_monitor.py test_atlas_ws_panel.py test_regression.py
+      - name: Commit integration only after tests pass
+        run: |
+          if ! git diff --quiet -- app.py; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app.py
+            git commit -m "feat: auto-track paper signals from A/B live KR candidates"
+            git fetch origin feature/atlas-paper-live-bridge
+            git rebase origin/feature/atlas-paper-live-bridge
+            git push origin HEAD:feature/atlas-paper-live-bridge
+          fi
