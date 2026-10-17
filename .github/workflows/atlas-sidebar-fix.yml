@@ -1,0 +1,29 @@
+name: Publish ATLAS sidebar link
+on:
+  push:
+    paths:
+      - 'scripts/ensure_atlas_sidebar.py'
+      - '.github/workflows/atlas-sidebar-fix.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Insert ATLAS page link into existing sidebar
+        run: python scripts/ensure_atlas_sidebar.py
+      - name: Verify scanner syntax
+        run: python -m py_compile app.py
+      - name: Commit only if changed
+        run: |
+          if ! git diff --quiet -- app.py; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app.py
+            git commit -m "fix: expose ATLAS Live Monitor in scanner sidebar"
+            git push origin HEAD:main
+          fi
