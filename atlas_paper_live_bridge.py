@@ -37,6 +37,9 @@ def validated_kr_trade(code, row, *, now, venue):
     if row.get("market_date")!=now.astimezone(KST).strftime("%Y%m%d"):
         return None
     if venue=="J":
+        from atlas_nxt_revalidation import market_phase
+        if market_phase(now) not in ("KRX_OPEN_1_5","KRX_REGULAR"):
+            return None
         from atlas_ws_panel import live_state
         if live_state(row,True,now)!="실시간 수신 확인":
             return None
@@ -88,6 +91,10 @@ def step_ledger(state, *, a_candidates=(), b_candidates=(), ws_rows=None,
             q=observed.get(code)
             if q is None:
                 continue
+            if origin=="B":
+                candidate_stamp=_utc(item.get("received_utc"))
+                if candidate_stamp is None or not 0<=(now-candidate_stamp).total_seconds()<=90:
+                    continue
             key=f"{day}:KR:{origin}:{code}"
             if key in state["signals"] or len(state["signals"])>=MAX_SIGNAL_PER_SESSION:
                 continue
