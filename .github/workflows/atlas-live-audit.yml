@@ -1,0 +1,26 @@
+name: Inspect existing ATLAS live tape
+on:
+  push:
+    branches: [feature/atlas-live-index-watch]
+    paths: ['.github/workflows/atlas-live-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect live subscriptions and sidebar
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          t=Path('app.py').read_text(encoding='utf-8').splitlines()
+          tree=ast.parse('\n'.join(t))
+          for n in ast.walk(tree):
+              if isinstance(n,(ast.FunctionDef,ast.ClassDef)) and any(k in n.name.lower() for k in ('live','tape','future','index','websocket','subscribe','ws_')):
+                  print('DEF',n.name,n.lineno,getattr(n,'end_lineno',0))
+          for a,b in [(1560,1590),(1750,1840),(1840,1910),(1910,1980),(1980,2060),(2580,2668)]:
+              print('SECTION',a,b)
+              for i in range(a-1,min(b,len(t))):print(f'{i+1}: {t[i][:200]}')
+          PY
