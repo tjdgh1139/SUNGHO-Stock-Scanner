@@ -7,7 +7,7 @@ from datetime import datetime,timezone,timedelta
 from pathlib import Path
 import csv,json,sys
 import FinanceDataReader as fdr
-from atlas_preopen_background import build_snapshot
+from atlas_preopen_background import build_snapshot,phase
 
 ROOT=Path(__file__).resolve().parent
 UNIVERSE=ROOT/"config/atlas_preopen_universe.csv"
@@ -26,6 +26,11 @@ def main(now=None):
     if snapshot is None:
         print("Outside KST 07:00 or 07:55 preopen windows; no publication")
         return 0
+    finished=datetime.now(timezone.utc)
+    if phase(finished)!=snapshot["phase"]:
+        print("Preopen window expired during scan; refusing to publish")
+        return 0
+    snapshot["generated_at_utc"]=finished.isoformat()
     # Preserve previous 1st-phase result if the 2nd phase has no validated data.
     if not snapshot["candidates"]:
         print("No validated EOD candidates; refusing to publish a fabricated TOP5")
