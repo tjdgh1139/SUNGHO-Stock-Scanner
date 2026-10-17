@@ -2752,6 +2752,8 @@ from atlas_compact_dashboard import render_compact_dashboard
 render_compact_dashboard(live_tape, websocket_capability, kis_configured, secret_value)
 from atlas_foreign_flow_panel import render_foreign_flow_panel
 render_foreign_flow_panel(st.session_state.get("scan",pd.DataFrame()),live_tape,secret_value)
+from atlas_opening_flow_panel import render_opening_flow_panel
+render_opening_flow_panel(live_tape)
 from atlas_auto_candidate_board import render_auto_candidate_board
 render_auto_candidate_board(listing,kis_quote,kis_us_movers,kis_configured,
                             live_tape,websocket_capability,secret_value)
