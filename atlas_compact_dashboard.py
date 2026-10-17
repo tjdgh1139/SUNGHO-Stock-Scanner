@@ -46,9 +46,14 @@ def compact_rows(rest_rows, ws_rows, connected, now=None):
             continue
         rest=rest_rows.get(code,{})
         if float(rest.get("현재가") or 0)>0:
+            try:
+                stamp=datetime.fromisoformat(str(rest["rest_received_utc"]).replace("Z","+00:00"))
+                age=max(0,int((now-stamp.astimezone(timezone.utc)).total_seconds()))
+            except (ValueError,TypeError,KeyError):
+                age=None
             output.append({"code":code,"name":name,"price":float(rest["현재가"]),
                            "change":rest.get("등락%"),"state":"REST · 지연 가능",
-                           "volume":rest.get("누적거래량"),"strength":None,"age":None})
+                           "volume":rest.get("누적거래량"),"strength":None,"age":age})
         else:
             output.append({"code":code,"name":name,"price":None,"change":None,
                            "state":"시세 미수신","volume":None,"strength":None,"age":None})
@@ -98,7 +103,8 @@ def render_compact_dashboard(tape_factory, websocket_capability, kis_configured,
             except (QuoteUnavailable,KeyError,ValueError):
                 pass
         ws_rows,connected,error=tape.snapshots()
-        data=compact_rows(st.session_state.atlas_compact_rest,ws_rows,connected)
+        combined={**st.session_state.get("atlas_sidebar_quotes",{}),**st.session_state.atlas_compact_rest}
+        data=compact_rows(combined,ws_rows,connected)
         cols=st.columns(3,gap="small")
         for col,row in zip(cols,data):
             with col:
@@ -108,7 +114,7 @@ def render_compact_dashboard(tape_factory, websocket_capability, kis_configured,
                     pct=row["change"]
                     delta=None if pct is None else f"{float(pct):+.2f}%"
                     st.metric("현재가",price,delta,delta_color="normal")
-                    st.caption(row["state"])
+                    st.caption(row["state"] + (f" · 조회 {row['age']}초 전" if row["age"] is not None else ""))
                     if row["volume"] is not None:
                         st.caption(f"거래량 {float(row['volume']):,.0f}주")
                     if row["strength"] is not None:
