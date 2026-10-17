@@ -21,6 +21,6 @@ jobs:
           for pattern in ('st.navigation','st.Page(','st.set_page_config','showSidebarNavigation','page_link','st.sidebar','pages/','display: none'):
               found=[(i,l[:180]) for i,l in enumerate(t.splitlines(),1) if pattern in l]
               print('PATTERN',repr(pattern),'COUNT',len(found),'SAMPLES',found[:7])
-          print('PAGES', [str(x) for x in Path('pages').glob('*.py')])
+          print('PAGES', [str(x) for x in Path('pages').glob('*.py')])\n          for a,b in [(1240,1270),(2715,2755)]:\n              print('SECTION',a,b, '\\n'.join(f'{i+1}: {t.splitlines()[i][:200]}' for i in range(a-1,min(b,len(t.splitlines())))))\n          for p in ('stSidebarNav','stSidebarNavItems','data-testid','visibility: hidden'):\n              print('CSS',p, [(i+1,l[:160]) for i,l in enumerate(t.splitlines()) if p in l][:12])
           print('HEAD', '\n'.join(t.splitlines()[:45]))
           PY
