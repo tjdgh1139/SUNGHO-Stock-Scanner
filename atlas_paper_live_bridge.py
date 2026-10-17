@@ -96,7 +96,8 @@ def step_ledger(state, *, a_candidates=(), b_candidates=(), ws_rows=None,
                 if candidate_stamp is None or not 0<=(now-candidate_stamp).total_seconds()<=90:
                     continue
             key=f"{day}:KR:{origin}:{code}"
-            todays=sum(k.startswith(day+":KR:") for k in state["signals"])\n            if key in state["signals"] or todays>=MAX_SIGNAL_PER_SESSION:
+            todays=sum(k.startswith(day+":KR:") for k in state["signals"])
+            if key in state["signals"] or todays>=MAX_SIGNAL_PER_SESSION:
                 continue
             # Signal requires a fresh, independently authenticated observation.
             try:
