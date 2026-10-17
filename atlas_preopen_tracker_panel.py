@@ -79,6 +79,14 @@ def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory)
                             "손절 기준":x["stop"],"1차 목표":x["target"],
                             "판정":x["status"],"수신 경과(초)":x["quote_age"],
                         } for x in current["rows"]]),hide_index=True,use_container_width=True)
+                        history=[]
+                        for m in sorted(state):
+                            for x in state[m]["rows"]:
+                                history.append({"분":m,"종목":x["name"],
+                                                "확인 가격":x["price"],"상태":x["status"]})
+                        if history:
+                            with st.expander("1~5분 판단 기록",expanded=False):
+                                st.dataframe(pd.DataFrame(history),hide_index=True,use_container_width=True)
                         continue
                 st.dataframe(pd.DataFrame([{
                     "종목":x["name"],"스캔 점수":x["score"],
