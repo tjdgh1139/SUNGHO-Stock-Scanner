@@ -86,3 +86,27 @@ def rank_prebreakout_us(items, *, now=None, limit=3):
                         "근거":"최근 5분 상승 초기 · 유동성/호가 통과 · 당일 과열 제외",
                         "판정":"상승 전조 관찰 · 시세 지연 미검증"})
     return sorted(results,key=lambda r:(r["예비점수"],r["거래대금"]),reverse=True)[:limit]
+
+
+def turnover_momentum(previous, current, previous_rate=None):
+    """Cumulative turnover snapshots from same symbol/session.
+
+    Returns (current KRW/s rate, acceleration ratio or None). Never infers
+    momentum from a single snapshot, a reset, or an invalid time interval.
+    """
+    try:
+        a=datetime.fromisoformat(str(previous["quote_received_utc"]).replace("Z","+00:00"))
+        b=datetime.fromisoformat(str(current["quote_received_utc"]).replace("Z","+00:00"))
+        seconds=(b-a).total_seconds()
+        if not 1<=seconds<=180:
+            return None,None
+        p=float(previous["장중거래대금"])
+        q=float(current["장중거래대금"])
+        if not all(math.isfinite(v) for v in (p,q)) or p<0 or q<p:
+            return None,None
+        rate=(q-p)/seconds
+        if previous_rate is None or not math.isfinite(float(previous_rate)) or float(previous_rate)<=0:
+            return rate,None
+        return rate,rate/float(previous_rate)
+    except (ValueError,KeyError,TypeError,OverflowError):
+        return None,None
