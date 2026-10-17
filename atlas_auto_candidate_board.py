@@ -10,6 +10,7 @@ import time
 import pandas as pd
 import streamlit as st
 from atlas_ws_panel import live_state
+from atlas_nxt_revalidation import market_phase,nxt_fresh_quote
 from atlas_prebreakout import rank_prebreakout_kr,rank_prebreakout_us,turnover_momentum
 from atlas_kis_readonly import WATCHLIST
 from atlas_auto_candidates import (
@@ -22,7 +23,7 @@ from atlas_auto_candidates import (
 def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_configured_fn,
                                 tape_factory,websocket_capability,secret_value):
     st.markdown("### 🎯 ATLAS 급등 *전* 유력 후보")
-    st.caption("스캔 버튼 불필요 · 화면 2초 갱신 / 한국 KRX REST 30초 순환 / 미국 순위 60초 조회 · 페이지 열려 있을 때만 동작")
+    st.caption("스캔 버튼 불필요 · NXT 08:00부터 인증된 WS 후보 반영 · 화면 2초 갱신 / KRX REST 30초 순환 / 미국 순위 60초 조회 · 페이지 열려 있을 때만")
     if not kis_configured_fn():
         st.warning("KIS API 연결이 필요합니다. 검증되지 않은 후보는 표시하지 않습니다.")
         return
@@ -63,6 +64,8 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
         now=datetime.now(timezone.utc)
         mono=time.monotonic()
         kr_open=kr_regular_hours(now)
+        nxt_open=market_phase(now)=="NXT_PRE"
+        kr_active=kr_open or nxt_open
         us_open=us_regular_hours(now)
         if kr_open and mono-st.session_state.atlas_auto_kr_last>=KR_INTERVAL:
             st.session_state.atlas_auto_kr_last=mono
@@ -130,11 +133,30 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                 if item:
                     item["source"]="KIS WS · 체결/호가/프로그램 최근 10초 확인"
                     record_kr_item(code,item,live_quote,"WS")
+        if nxt_open and getattr(tape,"market",None)=="NX" and ws_connected:
+            for code,live in ws_rows.items():
+                verified=nxt_fresh_quote(live,now=datetime.now(timezone.utc))
+                if not verified:
+                    continue
+                symbol=str(code)
+                name=next((n for c,n in st.session_state.atlas_auto_kr_universe if c==symbol),symbol)
+                nxt_quote={"현재가":verified["price"],
+                           "장중등락%":live.get("등락%"),
+                           "장중거래대금":verified["turnover"],
+                           "장중거래량":verified["volume"],
+                           "quote_received_utc":verified["received_utc"],
+                           "장중고가":live.get("장중고가"),
+                           "체결강도":verified["strength"],
+                           "프로그램순매수대금":live.get("프로그램순매수대금")}
+                item=kr_candidate(symbol,name,nxt_quote,now=datetime.now(timezone.utc))
+                if item:
+                    item["source"]="KIS WS NXT · authenticated venue, no investor inference"
+                    record_kr_item(symbol,item,nxt_quote,"NXT")
         kr=fresh_ranked(list(st.session_state.atlas_auto_kr_seen.values()),datetime.now(timezone.utc))
         us=fresh_ranked(st.session_state.atlas_auto_us_rows,datetime.now(timezone.utc))
         # Early prebreakout WATCH shortlist, not today's top gainers.
         pre_kr=rank_prebreakout_kr(list(st.session_state.atlas_auto_kr_seen.values()),
-                                   now=datetime.now(timezone.utc),limit=3) if kr_open else []
+                                   now=datetime.now(timezone.utc),limit=3) if kr_active else []
         pre_us=rank_prebreakout_us(st.session_state.atlas_auto_us_rows,
                                    now=datetime.now(timezone.utc),limit=3) if us_open else []
         with st.container(border=True):
@@ -160,14 +182,14 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
             st.caption("최대 3종목씩, 조건 미달 시 빈칸. 국내 순환 조회·미국 순위 첫 페이지에 한정됩니다.")
         st.divider()
         # Separate dynamically reranked TOP5 from the frozen pre-open watchlist.
-        kr=rank_prebreakout_kr(kr,now=datetime.now(timezone.utc),limit=5) if kr_open else []
+        kr=rank_prebreakout_kr(kr,now=datetime.now(timezone.utc),limit=5) if kr_active else []
         us=rank_prebreakout_us(us,now=datetime.now(timezone.utc),limit=5) if us_open else []
         left,right=st.columns(2,gap="medium")
         with left:
             st.markdown("#### 🇰🇷 B. 한국 신규 전조 후보 TOP 5")
             covered=st.session_state.atlas_auto_kr_universe
             cursor=st.session_state.atlas_auto_kr_cursor
-            st.caption(f"KRX {'장중' if kr_open else '장외'} · 순환 범위 {len(covered):,}종목 · 순환 조회 시도 {len(st.session_state.atlas_auto_kr_scanned):,}개 · 회당 {KR_BATCH}종목")
+            st.caption(f"{'NXT 프리마켓' if nxt_open else 'KRX 장중' if kr_open else '장외'} · 순환 범위 {len(covered):,}종목 · 순환 조회 시도 {len(st.session_state.atlas_auto_kr_scanned):,}개 · 회당 {KR_BATCH}종목")
             if kr:
                 st.dataframe(pd.DataFrame([{
                     "종목":x["종목"],"가격(원)":int(x["현재가"]),
