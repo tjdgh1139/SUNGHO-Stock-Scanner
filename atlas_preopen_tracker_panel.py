@@ -4,6 +4,7 @@ On-page only; polls each market once per minute during first five minutes.
 Frozen candidates are not silently replaced by dynamic discovery candidates.
 """
 from datetime import datetime, timezone
+import time
 import streamlit as st
 import pandas as pd
 from atlas_preopen_monitor import freeze_candidates,minute_after_open,minute_record
@@ -21,7 +22,8 @@ def capture_preopen(frame,market,now=None):
     return frozen
 
 
-def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory):
+def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory,
+                           websocket_capability,kis_configured,secret_value):
     st.markdown("### 📌 A. 장전 스캔 후보 · 개장 1~5분 추적")
     st.caption("장전에 수동 스캔하면 후보가 고정되고, 개장 후 매분 시세·진입/손절/목표를 재평가합니다. 신규 급등 후보는 별도 B 화면에 표시됩니다.")
 
@@ -37,6 +39,20 @@ def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory)
                 if market=="KR" and market_phase(now)=="NXT_PRE":
                     st.markdown("**NXT 프리마켓 08:00~08:50 · 장전 후보 즉시 재검증**")
                     tape=tape_factory()
+                    # Reuse one KIS tape, never interrupt a running KRX session.
+                    if websocket_capability() and kis_configured():
+                        last=st.session_state.get("atlas_nxt_last_attempt",-1e12)
+                        thread=getattr(tape,"thread",None)
+                        active=bool(thread and thread.is_alive())
+                        if (not active and time.monotonic()-last>=120 and
+                            getattr(tape,"market",None) in (None,"NX")):
+                            st.session_state.atlas_nxt_last_attempt=time.monotonic()
+                            try:
+                                tape.start(tuple(c["symbol"] for c in frozen["candidates"][:5]),
+                                           secret_value("KIS_APP_KEY"),
+                                           secret_value("KIS_APP_SECRET"),market="NX")
+                            except Exception:
+                                pass
                     ws,connected,_=tape.snapshots()
                     if connected and getattr(tape,"market",None)=="NX":
                         nxt=rerank_preopen_on_nxt(frozen,ws,now=now,limit=5)
