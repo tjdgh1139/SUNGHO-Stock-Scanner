@@ -63,7 +63,7 @@ def kr_candidate(code,name,quote,now=None):
         value=float(quote["장중거래대금"])
         volume=float(quote["장중거래량"])
         if not (0<=age<=MAX_AGE_SECONDS and 0<px<1e9 and
-                0<volume and value>=3_000_000_000 and 1.5<=pct<=24):
+                0<volume and value>=3_000_000_000 and 0.2<=pct<=24):
             return None
         if not all(math.isfinite(x) for x in (px,pct,value,volume)):
             return None
@@ -73,7 +73,10 @@ def kr_candidate(code,name,quote,now=None):
         return {"시장":"KR","종목":name,"코드":code,"현재가":px,
                 "등락%":round(pct,2),"거래대금":value,"점수":score,
                 "상태":"상승 관찰 · 진입 검증 전","source":"KIS REST 수신 · 체결시각 미검증",
-                "received_utc":stamp.isoformat()}
+                "received_utc":stamp.isoformat(),
+                "near_intraday_high":bool(quote.get("장중고가") and px>=float(quote["장중고가"])*0.995),
+                "trade_strength":quote.get("체결강도"),
+                "program_net":quote.get("프로그램순매수대금")}
     except (KeyError,ValueError,TypeError,OverflowError):
         return None
 
@@ -92,7 +95,7 @@ def us_candidates(frame,now=None):
             spread=float(r["스프레드%"])
             px=float(r["현재가"])
             if not (0<=age<=MAX_AGE_SECONDS and bool(r["기초유동성통과"]) and
-                    0.5<=pct<=20 and turnover>=1_000_000 and 0<=spread<=1 and px>0):
+                    0.3<=pct<=20 and turnover>=1_000_000 and 0<=spread<=1 and px>0):
                 continue
             if not all(math.isfinite(x) for x in (pct,turnover,spread,px)):
                 continue
@@ -100,6 +103,7 @@ def us_candidates(frame,now=None):
             out.append({"시장":"US","종목":str(r["종목"]),"코드":str(r["코드"]),
                         "현재가":px,"등락%":round(float(r.get("당일등락%",pct)),2),
                         "최근5분%":round(pct,2),"거래대금":turnover,"점수":score,
+                        "스프레드%":spread,
                         "상태":"급등 관찰 · 진입 검증 전",
                         "source":"KIS 해외 순위 첫 페이지 · 지연 미검증",
                         "received_utc":stamp.isoformat()})
