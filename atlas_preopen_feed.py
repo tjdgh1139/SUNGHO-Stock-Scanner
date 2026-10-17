@@ -16,6 +16,13 @@ def read_snapshot(path="data/atlas_preopen_candidates.json", now=None):
         local=now.astimezone(KST)
         if local.weekday()>4 or p.get("session_date")!=local.strftime("%Y%m%d"):
             return None
+        if t.astimezone(KST).strftime("%Y%m%d")!=p["session_date"]:
+            return None
+        minute=t.astimezone(KST).hour*60+t.astimezone(KST).minute
+        if p["stage"]=="first_0700" and not 420<=minute<475:
+            return None
+        if p["stage"]=="refresh_0755" and not 475<=minute<530:
+            return None
         if not 0<=(now-t).total_seconds()<=3*3600:
             return None
         items=p["candidates"]
