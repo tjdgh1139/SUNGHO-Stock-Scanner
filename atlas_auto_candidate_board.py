@@ -29,6 +29,8 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
         st.session_state.atlas_auto_kr_cursor=0
     if "atlas_auto_kr_seen" not in st.session_state:
         st.session_state.atlas_auto_kr_seen={}
+    if "atlas_auto_kr_scanned" not in st.session_state:
+        st.session_state.atlas_auto_kr_scanned=set()
     if "atlas_auto_kr_last" not in st.session_state:
         st.session_state.atlas_auto_kr_last=-1e12
     if "atlas_auto_us_last" not in st.session_state:
@@ -56,6 +58,7 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
                 cursor=st.session_state.atlas_auto_kr_cursor
                 for i in range(min(KR_BATCH,len(universe))):
                     code,name=universe[(cursor+i)%len(universe)]
+                    st.session_state.atlas_auto_kr_scanned.add(code)
                     try:
                         q=kis_quote_fn(code,market="J")
                         if q:
@@ -81,7 +84,7 @@ def render_auto_candidate_board(listing_fn,kis_quote_fn,kis_us_movers_fn,kis_con
             st.markdown("#### 🇰🇷 한국 급등 유력 *관찰* 후보")
             covered=st.session_state.atlas_auto_kr_universe
             cursor=st.session_state.atlas_auto_kr_cursor
-            st.caption(f"KRX {'장중' if kr_open else '장외'} · 순환 범위 {len(covered):,}종목 · 현재 순환 위치 {cursor:,} · 회당 {KR_BATCH}종목")
+            st.caption(f"KRX {'장중' if kr_open else '장외'} · 순환 범위 {len(covered):,}종목 · 순환 조회 시도 {len(st.session_state.atlas_auto_kr_scanned):,}개 · 회당 {KR_BATCH}종목")
             if kr:
                 st.dataframe(pd.DataFrame([{
                     "종목":x["종목"],"가격(원)":int(x["현재가"]),
