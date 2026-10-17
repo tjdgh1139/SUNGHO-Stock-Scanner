@@ -7,7 +7,8 @@ from datetime import datetime,timezone,timedelta
 from pathlib import Path
 import csv,json,sys
 import FinanceDataReader as fdr
-from atlas_preopen_background import build_snapshot,phase
+from atlas_preopen_background import build_snapshot,phase,KST
+from atlas_market_calendar import krx_session
 
 ROOT=Path(__file__).resolve().parent
 UNIVERSE=ROOT/"config/atlas_preopen_universe.csv"
@@ -16,6 +17,9 @@ OUTPUT=ROOT/"data/atlas_preopen_kr_latest.json"
 
 def main(now=None):
     now=now or datetime.now(timezone.utc)
+    if not krx_session(now.astimezone(KST).date()):
+        print("KRX non-session or calendar unavailable; no publication")
+        return 0
     with UNIVERSE.open(encoding="utf-8",newline="") as f:
         rows=list(csv.DictReader(f))
     universe=[(r["code"],r["name"],r["sector"]) for r in rows]
