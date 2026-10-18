@@ -1,0 +1,28 @@
+name: ATLAS NXT and collector safety gates
+on:
+  push:
+    branches:
+      - feature/atlas-paper-autosave-recovery
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+jobs:
+  offline-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pytest
+        run: python -m pip install pytest
+      - name: Syntax validation
+        run: python -m compileall -q atlas_nxt_opening_radar.py atlas_collector_watchdog.py test_atlas_nxt_opening_radar.py test_atlas_collector_watchdog.py
+      - name: Offline safety regression
+        env:
+          KIS_APP_KEY: ""
+          KIS_APP_SECRET: ""
+        run: python -m pytest -q test_atlas_nxt_opening_radar.py test_atlas_collector_watchdog.py
