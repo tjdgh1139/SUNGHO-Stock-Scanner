@@ -1,0 +1,23 @@
+name: ATLAS collector integration tests
+on:
+  push:
+    branches: [feature/atlas-paper-autosave-recovery]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest
+      - run: python -m compileall -q atlas_collector_watchdog.py atlas_collector_runner.py atlas_collector_storage.py atlas_collector_market_gate.py atlas_market_session_schedule.py atlas_nxt_opening_radar.py atlas_mobile_view_model.py
+      - run: python -m pytest -q test_atlas_collector_watchdog.py test_atlas_collector_runner.py test_atlas_collector_storage.py test_atlas_collector_market_gate.py test_atlas_market_gate_persistence.py test_atlas_market_session_schedule.py test_atlas_nxt_opening_radar.py test_atlas_mobile_view_model.py
+        env:
+          KIS_APP_KEY: ""
+          KIS_APP_SECRET: ""
