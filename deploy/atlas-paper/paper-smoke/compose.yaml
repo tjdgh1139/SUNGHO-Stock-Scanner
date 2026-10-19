@@ -1,0 +1,24 @@
+name: atlas-paper-smoke
+services:
+  paper-no-feed:
+    build:
+      context: ../../..
+      dockerfile: deploy/atlas-paper/paper-smoke/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ATLAS_PAPER_DB: /var/lib/atlas/paper.sqlite3
+      ATLAS_PAPER_NAMESPACE: STAGING_NO_FEED
+    volumes:
+      - paper_smoke_data:/var/lib/atlas
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 512m
+volumes:
+  paper_smoke_data:
