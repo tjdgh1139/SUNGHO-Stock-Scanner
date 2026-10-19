@@ -22,6 +22,7 @@ def market_poll(source, sink, *, venue, now=None, kr_holiday=False,
                 "venue":venue}
         sink(record)
         return record
-    result=poll_once(source,sink,now=now)
-    result["venue"]=venue
-    return result
+    def venue_sink(record):
+        sink({**record, "venue":venue})
+    result=poll_once(source,venue_sink,now=now)
+    return {**result, "venue":venue}
