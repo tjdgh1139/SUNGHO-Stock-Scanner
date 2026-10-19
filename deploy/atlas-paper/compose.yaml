@@ -1,0 +1,23 @@
+services:
+  atlas-paper-staging:
+    build:
+      context: ../..
+      dockerfile: deploy/atlas-paper/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      ATLAS_HEALTH_DB: /var/lib/atlas/health.sqlite3
+      ATLAS_HEALTH_INTERVAL_SECONDS: "60"
+    volumes:
+      - atlas_paper_data:/var/lib/atlas
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 768m
+volumes:
+  atlas_paper_data:
