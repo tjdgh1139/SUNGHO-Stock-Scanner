@@ -1,10 +1,10 @@
-name: ATLAS paper staging deploy (manual approval)
+name: ATLAS staging code sync (manual)
 on:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: atlas-paper-staging-deploy
+  group: atlas-staging-sync
   cancel-in-progress: false
 jobs:
   test:
@@ -16,18 +16,18 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install pytest requests streamlit streamlit-autorefresh
-      - run: python -m pytest -q test_atlas_paper_session_adapter.py test_atlas_paper_session_durability.py test_atlas_candidate_signal_gate.py test_atlas_paper_exit_gate.py test_atlas_signal_cycle.py
+      - name: Validate paper-only signal safety
         env:
           KIS_APP_KEY: ''
           KIS_APP_SECRET: ''
-  deploy:
+        run: python -m pytest -q test_atlas_paper_session_adapter.py test_atlas_paper_session_durability.py test_atlas_candidate_signal_gate.py test_atlas_paper_exit_gate.py test_atlas_signal_cycle.py
+  sync:
     needs: test
     runs-on: ubuntu-latest
     environment: atlas-paper-staging
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Configure SSH
+      - name: Configure SSH (pinned known host)
         env:
           DEPLOY_KEY: ${{ secrets.ATLAS_DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.ATLAS_DEPLOY_HOST }}
@@ -39,8 +39,8 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
-      - name: Deploy isolated no-feed container
+      - name: Sync code to isolated staging directory (no Docker access)
         env:
           DEPLOY_HOST: ${{ secrets.ATLAS_DEPLOY_HOST }}
         run: |
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 "atlasdeploy@$DEPLOY_HOST" 'set -eu; cd /opt/atlas; test "$(git branch --show-current)" = "feature/atlas-paper-autosave-recovery"; test -z "$(git status --porcelain)"; git fetch origin feature/atlas-paper-autosave-recovery; git merge --ff-only origin/feature/atlas-paper-autosave-recovery; docker compose -f deploy/atlas-paper/paper-smoke/compose.yaml up -d --build; docker compose -f deploy/atlas-paper/paper-smoke/compose.yaml ps'
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 "atlasdeploy@$DEPLOY_HOST" 'set -eu; cd /home/atlasdeploy/staging/atlas; test "$(git branch --show-current)" = "feature/atlas-paper-autosave-recovery"; test -z "$(git status --porcelain)"; git fetch origin feature/atlas-paper-autosave-recovery; git merge --ff-only origin/feature/atlas-paper-autosave-recovery; git log -1 --format="%h %s"'
