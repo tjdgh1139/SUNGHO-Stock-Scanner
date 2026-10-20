@@ -40,6 +40,16 @@ def preflight(project_dir: str = "/opt/atlas") -> dict:
         result["checks"]["quote_request:four_positional_args"] = bool(args and (args.vararg or (required <= 4 <= positional)))
     except (OSError, SyntaxError, UnicodeError):
         result["checks"]["quote_request:four_positional_args"] = False
+    # Token cache must accept the two positional credentials used by CLI.
+    try:
+        token_tree = ast.parse((path / "atlas_kis_token_cache.py").read_text(encoding="utf-8"))
+        token_defs = [n for n in token_tree.body if isinstance(n, ast.FunctionDef) and n.name == "get_token"]
+        token_args = token_defs[0].args if token_defs else None
+        token_positional = len(token_args.posonlyargs) + len(token_args.args) if token_args else 0
+        token_required = token_positional - len(token_args.defaults) if token_args else 999
+        result["checks"]["get_token:two_positional_args"] = bool(token_args and (token_args.vararg or token_required <= 2 <= token_positional))
+    except (OSError, SyntaxError, UnicodeError):
+        result["checks"]["get_token:two_positional_args"] = False
     result["ready"] = all(result["checks"].values())
     return result
 
