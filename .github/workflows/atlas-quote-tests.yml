@@ -18,6 +18,8 @@ on:
       - 'atlas_scan_readiness.py'
       - 'atlas_server_preflight.py'
       - 'atlas_engine_health.py'
+      - 'atlas_strategy_promotion.py'
+      - 'test_atlas_strategy_promotion.py'
       - 'test_atlas_engine_health.py'
       - 'test_atlas_server_preflight.py'
       - 'test_atlas_scan_readiness.py'
@@ -44,6 +46,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Syntax check
-        run: python -m py_compile atlas_market_quote_store.py atlas_kis_quote_bridge.py atlas_market_collection.py atlas_quote_quality.py atlas_signal_followup.py atlas_signal_checkpoints.py atlas_next_observed_session.py atlas_quote_coverage.py atlas_kis_collector_cli.py atlas_kis_quote_normalizer.py atlas_scan_readiness.py atlas_server_preflight.py atlas_engine_health.py
+        run: python -m py_compile atlas_market_quote_store.py atlas_kis_quote_bridge.py atlas_market_collection.py atlas_quote_quality.py atlas_signal_followup.py atlas_signal_checkpoints.py atlas_next_observed_session.py atlas_quote_coverage.py atlas_kis_collector_cli.py atlas_kis_quote_normalizer.py atlas_scan_readiness.py atlas_server_preflight.py atlas_engine_health.py atlas_strategy_promotion.py
       - name: Unit tests (no KIS credentials or live requests)
-        run: python -m unittest -v test_atlas_market_quote_store test_atlas_kis_quote_bridge test_atlas_market_collection test_atlas_quote_quality test_atlas_signal_followup test_atlas_signal_checkpoints test_atlas_next_observed_session test_atlas_quote_coverage test_atlas_kis_collector_cli test_atlas_kis_quote_normalizer test_atlas_scan_readiness test_atlas_server_preflight test_atlas_engine_health
+        run: python -m unittest -v test_atlas_market_quote_store test_atlas_kis_quote_bridge test_atlas_market_collection test_atlas_quote_quality test_atlas_signal_followup test_atlas_signal_checkpoints test_atlas_next_observed_session test_atlas_quote_coverage test_atlas_kis_collector_cli test_atlas_kis_quote_normalizer test_atlas_scan_readiness test_atlas_server_preflight test_atlas_engine_health test_atlas_strategy_promotion
