@@ -33,7 +33,12 @@ def main(argv=None):
     secret=os.environ.get("KIS_APP_SECRET")
     if not key or not secret:
         raise RuntimeError("KIS credentials are not configured")
-    token=get_token(key,secret)
+    try:
+        token=get_token(key,secret)
+    except Exception as exc:
+        # Do not print broker exception messages: they can contain credentials.
+        print(json.dumps({"status":"AUTH_FAILED","error_type":type(exc).__name__}))
+        return 3
     def provider(symbol):
         quote=quote_request(symbol,key,secret,token)
         return normalize_kis_quote(quote)
