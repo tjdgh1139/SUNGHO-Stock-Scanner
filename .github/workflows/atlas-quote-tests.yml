@@ -1,0 +1,29 @@
+name: ATLAS quote storage tests
+
+on:
+  push:
+    branches:
+      - atlas/market-data-storage-staging
+  pull_request:
+    paths:
+      - 'atlas_market_*.py'
+      - 'atlas_kis_quote_bridge.py'
+      - 'test_atlas_market_*.py'
+      - 'test_atlas_kis_quote_bridge.py'
+      - '.github/workflows/atlas-quote-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  quote-storage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: python -m py_compile atlas_market_quote_store.py atlas_kis_quote_bridge.py atlas_market_collection.py
+      - name: Unit tests (no KIS credentials or live requests)
+        run: python -m unittest -v test_atlas_market_quote_store test_atlas_kis_quote_bridge test_atlas_market_collection
