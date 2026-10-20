@@ -29,6 +29,8 @@ on:
       - 'atlas_exchange_session_gate.py'
       - 'atlas_staging_scheduler_gate.py'
       - 'atlas_krx_calendar_export.py'
+      - 'atlas_calendar_refresh.py'
+      - 'test_atlas_calendar_refresh.py'
       - 'test_atlas_krx_calendar_export.py'
       - 'test_atlas_staging_scheduler_gate.py'
       - 'test_atlas_exchange_session_gate.py'
@@ -66,6 +68,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Syntax check
-        run: python -m py_compile atlas_market_quote_store.py atlas_kis_quote_bridge.py atlas_market_collection.py atlas_quote_quality.py atlas_signal_followup.py atlas_signal_checkpoints.py atlas_next_observed_session.py atlas_quote_coverage.py atlas_kis_collector_cli.py atlas_kis_quote_normalizer.py atlas_scan_readiness.py atlas_server_preflight.py atlas_engine_health.py atlas_strategy_promotion.py atlas_auto_cycle_policy.py atlas_retry_policy.py atlas_cycle_coordinator.py atlas_collector_watchdog_policy.py atlas_collector_heartbeat.py atlas_collector_smoke.py atlas_kis_health_cli.py atlas_exchange_session_gate.py atlas_staging_scheduler_gate.py atlas_krx_calendar_export.py
+        run: python -m py_compile atlas_market_quote_store.py atlas_kis_quote_bridge.py atlas_market_collection.py atlas_quote_quality.py atlas_signal_followup.py atlas_signal_checkpoints.py atlas_next_observed_session.py atlas_quote_coverage.py atlas_kis_collector_cli.py atlas_kis_quote_normalizer.py atlas_scan_readiness.py atlas_server_preflight.py atlas_engine_health.py atlas_strategy_promotion.py atlas_auto_cycle_policy.py atlas_retry_policy.py atlas_cycle_coordinator.py atlas_collector_watchdog_policy.py atlas_collector_heartbeat.py atlas_collector_smoke.py atlas_kis_health_cli.py atlas_exchange_session_gate.py atlas_staging_scheduler_gate.py atlas_krx_calendar_export.py atlas_calendar_refresh.py
       - name: Unit tests (no KIS credentials or live requests)
-        run: python -m unittest -v test_atlas_market_quote_store test_atlas_kis_quote_bridge test_atlas_market_collection test_atlas_quote_quality test_atlas_signal_followup test_atlas_signal_checkpoints test_atlas_next_observed_session test_atlas_quote_coverage test_atlas_kis_collector_cli test_atlas_kis_quote_normalizer test_atlas_scan_readiness test_atlas_server_preflight test_atlas_engine_health test_atlas_strategy_promotion test_atlas_auto_cycle_policy test_atlas_retry_policy test_atlas_cycle_coordinator test_atlas_collector_watchdog_policy test_atlas_collector_heartbeat test_atlas_collector_smoke test_atlas_kis_health_cli test_atlas_exchange_session_gate test_atlas_staging_scheduler_gate test_atlas_krx_calendar_export
+        run: python -m unittest -v test_atlas_market_quote_store test_atlas_kis_quote_bridge test_atlas_market_collection test_atlas_quote_quality test_atlas_signal_followup test_atlas_signal_checkpoints test_atlas_next_observed_session test_atlas_quote_coverage test_atlas_kis_collector_cli test_atlas_kis_quote_normalizer test_atlas_scan_readiness test_atlas_server_preflight test_atlas_engine_health test_atlas_strategy_promotion test_atlas_auto_cycle_policy test_atlas_retry_policy test_atlas_cycle_coordinator test_atlas_collector_watchdog_policy test_atlas_collector_heartbeat test_atlas_collector_smoke test_atlas_kis_health_cli test_atlas_exchange_session_gate test_atlas_staging_scheduler_gate test_atlas_krx_calendar_export test_atlas_calendar_refresh
