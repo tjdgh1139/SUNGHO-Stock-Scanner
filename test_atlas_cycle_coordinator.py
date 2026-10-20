@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from atlas_cycle_coordinator import run_cycle
 from atlas_collector_heartbeat import latest_heartbeat
@@ -22,6 +23,15 @@ class CoordinatorTests(unittest.TestCase):
             heartbeat=latest_heartbeat(health_db,'KRX')
             self.assertEqual(heartbeat['state'],'HEALTHY')
             self.assertEqual(heartbeat['stored'],1)
+
+    def test_heartbeat_failure_never_reports_healthy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch('atlas_cycle_coordinator.save_heartbeat',side_effect=OSError('mock disk failure')):
+                outcome=run_cycle(str(Path(folder)/'quotes.db'),['000660'],
+                    lambda _: {'price':100},received_at_utc='2026-10-20T09:00:00Z',
+                    heartbeat_db_path=str(Path(folder)/'health.db'))
+            self.assertEqual(outcome.health.state,'HALTED')
+            self.assertEqual(outcome.health.reason,'HEARTBEAT_PERSISTENCE_FAILED')
 
     def test_failed_provider_no_infinite_retry(self):
         with tempfile.TemporaryDirectory() as folder:
