@@ -24,7 +24,7 @@ class MarketQuoteStoreTests(unittest.TestCase):
             db = str(Path(folder) / "quotes.sqlite")
             base = dict(market="KRX",symbol="000660",source="KIS_REST",
                         received_at_utc="2026-10-19T09:50:46+00:00",price=1)
-            for bad in (dict(price=0), dict(volume=-1),
+            for bad in (dict(price=0), dict(volume=-1), dict(change_pct=float("nan")),
                         dict(received_at_utc="2026-10-19T09:50:46")):
                 with self.assertRaises(ValueError):
                     save_quote(db, **(base | bad))
