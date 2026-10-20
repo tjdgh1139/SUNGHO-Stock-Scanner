@@ -28,6 +28,7 @@ def main(argv=None):
     # Import live broker integrations only for explicitly requested execution.
     from atlas_kis_token_cache import get_token
     from atlas_kis_readonly import quote_request
+    from atlas_kis_quote_normalizer import normalize_kis_quote
     key=os.environ.get("KIS_APP_KEY")
     secret=os.environ.get("KIS_APP_SECRET")
     if not key or not secret:
@@ -35,12 +36,7 @@ def main(argv=None):
     token=get_token(key,secret)
     def provider(symbol):
         quote=quote_request(symbol,key,secret,token)
-        if not isinstance(quote,dict):
-            raise ValueError("invalid KIS response")
-        # KIS adapter returns normalized keys; reject unknown shapes.
-        if "price" not in quote:
-            raise ValueError("KIS quote missing normalized price")
-        return quote
+        return normalize_kis_quote(quote)
     report=collect_cycle(args.db,symbols,provider)
     print(json.dumps({"attempted":report.attempted,"stored":report.stored,
                       "duplicates":report.duplicates,"failed":report.failed}))
