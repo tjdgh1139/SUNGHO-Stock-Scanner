@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 from atlas_market_quote_store import save_quote
 from atlas_quote_coverage import coverage_report
@@ -17,6 +18,14 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(b["coverage_pct"],50)
             self.assertEqual(b["missing"],["005930"])
             self.assertEqual(b["observations"],1)
+
+    def test_existing_db_without_quote_table(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db=str(Path(folder)/"empty.sqlite")
+            with sqlite3.connect(db) as con:
+                con.execute("CREATE TABLE unrelated(id INTEGER)")
+            result=coverage_report(db,"KRX",["000660"],"2026-10-20T00:00:00Z","2026-10-21T00:00:00Z")
+            self.assertEqual(result["missing"],["000660"])
 
 if __name__=="__main__":
     unittest.main()
