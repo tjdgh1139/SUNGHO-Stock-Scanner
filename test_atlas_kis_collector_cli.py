@@ -20,8 +20,10 @@ class CollectorCliTests(unittest.TestCase):
         def bad_token(*args):
             raise RuntimeError("SECRET_SHOULD_NOT_APPEAR")
         fake_token.get_token=bad_token
+        fake_quote=types.ModuleType("atlas_kis_readonly")
+        fake_quote.quote_request=lambda *args,**kwargs: {"price":100}
         output=io.StringIO()
-        with patch.dict(os.environ,{"KIS_APP_KEY":"test","KIS_APP_SECRET":"test"}), patch.dict(sys.modules,{"atlas_kis_token_cache":fake_token,"atlas_kis_readonly":types.ModuleType("atlas_kis_readonly")}), redirect_stdout(output):
+        with patch.dict(os.environ,{"KIS_APP_KEY":"test","KIS_APP_SECRET":"test"}), patch.dict(sys.modules,{"atlas_kis_token_cache":fake_token,"atlas_kis_readonly":fake_quote}), redirect_stdout(output):
             self.assertEqual(main(["--db","/tmp/unused.db","--symbols","000660"]),3)
         self.assertIn("AUTH_FAILED",output.getvalue())
         self.assertNotIn("SECRET_SHOULD_NOT_APPEAR",output.getvalue())
