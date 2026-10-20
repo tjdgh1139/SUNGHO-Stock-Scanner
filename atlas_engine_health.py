@@ -15,10 +15,14 @@ class EngineHealth:
     failed: int
 
 def evaluate_cycle(cycle, *, expected: int) -> EngineHealth:
-    attempted=int(cycle.attempted)
-    stored=int(cycle.stored)
-    duplicates=int(cycle.duplicates)
-    failed=len(cycle.failed)
+    try:
+        raw = (cycle.attempted, cycle.stored, cycle.duplicates)
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in raw):
+            raise ValueError("noninteger counters")
+        attempted, stored, duplicates = raw
+        failed = len(cycle.failed)
+    except (AttributeError, TypeError, ValueError):
+        return EngineHealth("HALTED", "INVALID_COUNTERS", 0, 0, 0, 0)
     if expected<=0:
         return EngineHealth("HALTED","EMPTY_UNIVERSE",attempted,stored,duplicates,failed)
     if attempted!=expected:
