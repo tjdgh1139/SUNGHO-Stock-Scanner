@@ -23,5 +23,15 @@ class FollowupTests(unittest.TestCase):
             self.assertEqual((perf["mfe_pct"],perf["mae_pct"]),(3,-3))
             self.assertEqual(perf["observations"],2)
 
+    def test_mixed_sources_require_selection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db=str(Path(folder)/"test.db")
+            save_signal(db,market="KRX",symbol="000660",signal_at_utc="2026-10-20T09:00:00Z",reference_price=100,strategy="paper")
+            for source,price in [("KIS_REST",101),("SECONDARY",120)]:
+                save_quote(db,market="KRX",symbol="000660",source=source,
+                           received_at_utc="2026-10-20T09:01:00Z",price=price)
+            self.assertEqual(snapshot_performance(db,1)["status"],"MULTIPLE_SOURCES_REQUIRE_SELECTION")
+            self.assertEqual(snapshot_performance(db,1,source="KIS_REST")["last_pct"],1)
+
 if __name__=="__main__":
     unittest.main()
