@@ -33,7 +33,7 @@ def save_signal(db_path: str, *, market: str, symbol: str, signal_at_utc: str,
             (market,symbol,signal_at_utc,reference_price,strategy))
         return cur.rowcount==1
 
-def snapshot_performance(db_path: str, signal_id: int) -> dict:
+def snapshot_performance(db_path: str, signal_id: int, *, source: str | None = None) -> dict:
     with sqlite3.connect(db_path) as con:
         con.executescript(SCHEMA)
         con.executescript(QUOTE_SCHEMA)
@@ -41,10 +41,17 @@ def snapshot_performance(db_path: str, signal_id: int) -> dict:
         row=con.execute("SELECT * FROM research_signals WHERE id=?",(signal_id,)).fetchone()
         if row is None:
             raise ValueError("unknown signal")
+        if source is None:
+            sources=con.execute("""SELECT DISTINCT source FROM market_quotes
+                WHERE market=? AND symbol=? AND received_at_utc>?""",
+                (row["market"],row["symbol"],row["signal_at_utc"])).fetchall()
+            if len(sources)>1:
+                return {"signal_id":signal_id,"status":"MULTIPLE_SOURCES_REQUIRE_SELECTION"}
+            source=sources[0][0] if sources else None
         quotes=con.execute(
             """SELECT price FROM market_quotes WHERE market=? AND symbol=?
-               AND received_at_utc>? ORDER BY received_at_utc""",
-            (row["market"],row["symbol"],row["signal_at_utc"])).fetchall()
+               AND received_at_utc>? AND source=? ORDER BY received_at_utc,id""",
+            (row["market"],row["symbol"],row["signal_at_utc"],source)).fetchall()
     if not quotes:
         return {"signal_id":signal_id,"status":"NO_POST_SIGNAL_DATA"}
     prices=[float(q["price"]) for q in quotes]
