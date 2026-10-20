@@ -40,6 +40,8 @@ def main(argv=None):
         print(json.dumps({"status":"AUTH_FAILED","error_type":type(exc).__name__}))
         return 3
     def provider(symbol):
+        # The existing deployed adapter may already return normalized keys.
+        # Both raw KIS REST output and normalized mappings are supported.
         quote=quote_request(symbol,key,secret,token)
         return normalize_kis_quote(quote)
     report=collect_cycle(args.db,symbols,provider)
