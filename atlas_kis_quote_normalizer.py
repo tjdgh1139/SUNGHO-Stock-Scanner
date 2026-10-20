@@ -32,7 +32,7 @@ def normalize_kis_quote(response: dict) -> dict:
         raise ValueError("nonpositive price")
     volume=_number(data.get("acml_vol",data.get("volume",data.get("누적거래량"))))
     turnover=_number(data.get("acml_tr_pbmn",data.get("turnover",data.get("누적거래대금"))))
-    change_pct=_number(data.get("prdy_ctrt",data.get("change_pct",data.get("등락률"))))
+    change_pct=_number(data.get("prdy_ctrt",data.get("change_pct",data.get("등락%",data.get("등락률")))))
     if volume is not None and volume<0:
         raise ValueError("negative volume")
     if turnover is not None and turnover<0:
