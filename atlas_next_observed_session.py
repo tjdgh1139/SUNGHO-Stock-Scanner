@@ -7,11 +7,13 @@ collection coverage has gaps. Observations are not executable fills.
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import sqlite3
+from atlas_market_quote_store import SCHEMA as QUOTE_SCHEMA
 
 MARKET_TIMEZONES={"KRX":"Asia/Seoul","NASDAQ":"America/New_York","NYSE":"America/New_York"}
 
 def next_observed_session(db_path: str, signal_id: int) -> dict:
     with sqlite3.connect(db_path) as con:
+        con.executescript(QUOTE_SCHEMA)
         con.row_factory=sqlite3.Row
         signal=con.execute("SELECT market,symbol,signal_at_utc,reference_price FROM research_signals WHERE id=?",(signal_id,)).fetchone()
         if signal is None:
