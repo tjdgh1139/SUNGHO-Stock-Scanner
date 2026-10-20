@@ -10,7 +10,8 @@ import fcntl
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from atlas_exchange_session_gate import market_gate
 
@@ -30,6 +31,13 @@ def main(argv=None, *, now_utc=None, collector=None):
         dates=set(data["verified_open_dates"])
         if any(not isinstance(day,str) for day in dates):
             raise ValueError("invalid dates")
+        current=(now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        generated=datetime.fromisoformat(data["generated_at_utc"].replace("Z","+00:00"))
+        valid_through=date.fromisoformat(data["valid_through_local_date"])
+        local_day=current.astimezone(ZoneInfo("Asia/Seoul")).date()
+        if generated.tzinfo is None or generated>current+timedelta(minutes=5) or current-generated>timedelta(hours=48) or local_day>valid_through:
+            print(json.dumps({"status":"BLOCKED","reason":"CALENDAR_EXPIRED"}))
+            return 3
         closes=data.get("verified_early_closes",{})
         if not isinstance(closes,dict):
             raise ValueError("invalid closes")
