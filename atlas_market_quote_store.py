@@ -7,6 +7,7 @@ does not infer exchange execution time from HTTP receipt time.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,8 @@ def save_quote(db_path: str, *, market: str, symbol: str, source: str,
     for value in (volume, turnover):
         if value is not None and not (0 <= float(value) < float("inf")):
             raise ValueError("invalid volume or turnover")
+    if change_pct is not None and not math.isfinite(float(change_pct)):
+        raise ValueError("invalid change_pct")
     payload = dict(market=market, symbol=symbol, source=source,
                    received_at_utc=received_at_utc, price=float(price),
                    volume=volume, turnover=turnover, change_pct=change_pct)
