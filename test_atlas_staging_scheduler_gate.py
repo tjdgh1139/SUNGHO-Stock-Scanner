@@ -13,10 +13,21 @@ class StagingSchedulerTests(unittest.TestCase):
             args=["--calendar",str(Path(d)/"missing.json"),"--lock-file",str(Path(d)/"lock"),
                   "--db",str(Path(d)/"q"),"--health-db",str(Path(d)/"h"),"--symbols","000660"]
             self.assertEqual(main(args),3)
+    def test_stale_calendar_blocks_collector(self):
+        with tempfile.TemporaryDirectory() as d:
+            cal=Path(d)/"cal.json"
+            cal.write_text(json.dumps({"market":"KRX","verified_open_dates":["2026-10-20"],
+                "generated_at_utc":"2026-10-01T00:00:00Z","valid_through_local_date":"2026-10-27"}))
+            args=["--calendar",str(cal),"--lock-file",str(Path(d)/"lock"),
+                  "--db",str(Path(d)/"q"),"--health-db",str(Path(d)/"h"),"--symbols","000660"]
+            calls=[]
+            self.assertEqual(main(args,now_utc=datetime(2026,10,20,1,tzinfo=timezone.utc),collector=lambda a:calls.append(a)),3)
+            self.assertEqual(calls,[])
+
     def test_verified_market_calls_collector_once(self):
         with tempfile.TemporaryDirectory() as d:
             cal=Path(d)/"cal.json"
-            cal.write_text(json.dumps({"market":"KRX","verified_open_dates":["2026-10-20"]}))
+            cal.write_text(json.dumps({"market":"KRX","verified_open_dates":["2026-10-20"],"generated_at_utc":"2026-10-20T00:00:00Z","valid_through_local_date":"2026-10-27"}))
             args=["--calendar",str(cal),"--lock-file",str(Path(d)/"lock"),
                   "--db",str(Path(d)/"q"),"--health-db",str(Path(d)/"h"),"--symbols","000660"]
             calls=[]
