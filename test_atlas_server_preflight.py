@@ -14,9 +14,12 @@ class PreflightTests(unittest.TestCase):
             root=Path(folder)
             for name in ("atlas_market_quote_store.py","atlas_kis_collector_cli.py"):
                 (root/name).write_text("# stub\n")
-            (root/"atlas_kis_readonly.py").write_text("def quote_request(*args): pass\n")
+            (root/"atlas_kis_readonly.py").write_text("def quote_request(symbol,key,secret,token): pass\n")
             (root/"atlas_kis_token_cache.py").write_text("def get_token(*args): pass\n")
             self.assertTrue(preflight(folder)["ready"])
+            (root/"atlas_kis_readonly.py").write_text("def quote_request(symbol): pass\\n")
+            self.assertFalse(preflight(folder)["ready"])
+            (root/"atlas_kis_readonly.py").write_text("def quote_request(symbol,key,secret,token): pass\\n")
             (root/"atlas_kis_token_cache.py").write_text("def wrong_name(): pass\n")
             self.assertFalse(preflight(folder)["ready"])
 
