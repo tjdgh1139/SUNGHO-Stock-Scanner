@@ -18,6 +18,11 @@ class KISNormalizerTests(unittest.TestCase):
         self.assertEqual(q["turnover"],4595754546000)
         self.assertEqual(q["change_pct"],1.57)
 
+    def test_deployed_percent_key(self):
+        quote=normalize_kis_quote({"현재가":1200000,"누적거래량":100,
+            "누적거래대금":120000000,"등락%":-1.57})
+        self.assertEqual(quote["change_pct"],-1.57)
+
     def test_missing_optional_is_not_zero(self):
         q=normalize_kis_quote({"stck_prpr":"1000"})
         self.assertIsNone(q["volume"])
