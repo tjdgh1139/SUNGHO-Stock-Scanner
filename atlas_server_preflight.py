@@ -4,8 +4,6 @@ Run before deploying collector code. Never prints credentials or tokens,
 never calls KIS, never changes production files.
 """
 from __future__ import annotations
-import importlib
-import inspect
 import json
 from pathlib import Path
 
@@ -30,6 +28,18 @@ def preflight(project_dir: str = "/opt/atlas") -> dict:
             result["checks"][filename + ":functions"] = functions <= defined
         except (OSError, SyntaxError, UnicodeError):
             result["checks"][filename + ":functions"] = False
+    # Ensure the deployed read-only quote adapter accepts four positional args:
+    # (symbol, app_key, app_secret, token). Never invoke it here.
+    try:
+        tree = ast.parse((path / "atlas_kis_readonly.py").read_text(encoding="utf-8"))
+        quote_defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "quote_request"]
+        args = quote_defs[0].args if quote_defs else None
+        positional = len(args.posonlyargs) + len(args.args) if args else 0
+        defaults = len(args.defaults) if args else 0
+        required = positional - defaults
+        result["checks"]["quote_request:four_positional_args"] = bool(args and (args.vararg or (required <= 4 <= positional)))
+    except (OSError, SyntaxError, UnicodeError):
+        result["checks"]["quote_request:four_positional_args"] = False
     result["ready"] = all(result["checks"].values())
     return result
 
