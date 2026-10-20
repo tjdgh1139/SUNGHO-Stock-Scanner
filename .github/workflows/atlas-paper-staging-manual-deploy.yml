@@ -1,0 +1,46 @@
+name: ATLAS staging code sync (manual)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: atlas-staging-sync
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest requests streamlit streamlit-autorefresh
+      - name: Validate paper-only signal safety
+        env:
+          KIS_APP_KEY: ''
+          KIS_APP_SECRET: ''
+        run: python -m pytest -q test_atlas_paper_session_adapter.py test_atlas_paper_session_durability.py test_atlas_candidate_signal_gate.py test_atlas_paper_exit_gate.py test_atlas_signal_cycle.py
+  sync:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: atlas-paper-staging
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH (pinned known host)
+        env:
+          DEPLOY_KEY: ${{ secrets.ATLAS_DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.ATLAS_DEPLOY_HOST }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.ATLAS_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_KEY" && test -n "$DEPLOY_HOST" && test -n "$DEPLOY_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Sync code to isolated staging directory (no Docker access)
+        env:
+          DEPLOY_HOST: ${{ secrets.ATLAS_DEPLOY_HOST }}
+        run: |
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 "atlasdeploy@$DEPLOY_HOST"
