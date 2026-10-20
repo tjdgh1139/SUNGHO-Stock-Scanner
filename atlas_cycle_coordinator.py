@@ -29,8 +29,15 @@ def run_cycle(db_path, symbols, provider, *, received_at_utc=None,
                            status_code=last_status_code)
     if heartbeat_db_path is not None:
         stamp = heartbeat_at_utc or datetime.now(timezone.utc).isoformat()
-        save_heartbeat(heartbeat_db_path, market=market,
-                       observed_at_utc=stamp, state=health.state,
-                       reason=health.reason, attempted=health.attempted,
-                       stored=health.stored, failed=health.failed)
+        try:
+            save_heartbeat(heartbeat_db_path, market=market,
+                           observed_at_utc=stamp, state=health.state,
+                           reason=health.reason, attempted=health.attempted,
+                           stored=health.stored, failed=health.failed)
+        except Exception as exc:
+            # Never report HEALTHY if the operational journal cannot persist.
+            from atlas_engine_health import EngineHealth
+            health=EngineHealth('HALTED','HEARTBEAT_PERSISTENCE_FAILED',
+                                health.attempted,health.stored,health.duplicates,health.failed)
+            retry=None
     return CycleOutcome(health=health,retry=retry,result=result)
