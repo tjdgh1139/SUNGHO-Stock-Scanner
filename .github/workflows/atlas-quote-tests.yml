@@ -9,6 +9,8 @@ on:
       - 'atlas_market_*.py'
       - 'atlas_kis_quote_bridge.py'
       - 'atlas_quote_quality.py'
+      - 'atlas_signal_followup.py'
+      - 'test_atlas_signal_followup.py'
       - 'test_atlas_quote_quality.py'
       - 'test_atlas_market_*.py'
       - 'test_atlas_kis_quote_bridge.py'
@@ -26,6 +28,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Syntax check
-        run: python -m py_compile atlas_market_quote_store.py atlas_kis_quote_bridge.py atlas_market_collection.py atlas_quote_quality.py
+        run: python -m py_compile atlas_market_quote_store.py atlas_kis_quote_bridge.py atlas_market_collection.py atlas_quote_quality.py atlas_signal_followup.py
       - name: Unit tests (no KIS credentials or live requests)
-        run: python -m unittest -v test_atlas_market_quote_store test_atlas_kis_quote_bridge test_atlas_market_collection test_atlas_quote_quality
+        run: python -m unittest -v test_atlas_market_quote_store test_atlas_kis_quote_bridge test_atlas_market_collection test_atlas_quote_quality test_atlas_signal_followup
