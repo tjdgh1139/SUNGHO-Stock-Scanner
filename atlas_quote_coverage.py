@@ -4,6 +4,7 @@ No claim of full market coverage when symbols or observations are missing.
 """
 import sqlite3
 from pathlib import Path
+from atlas_market_quote_store import SCHEMA as QUOTE_SCHEMA
 
 def coverage_report(db_path: str, market: str, expected_symbols: list[str],
                     start_utc: str, end_utc: str) -> dict:
@@ -17,6 +18,7 @@ def coverage_report(db_path: str, market: str, expected_symbols: list[str],
         return {"market":market,"expected":len(symbols),"observed":0,
                 "coverage_pct":0.0,"missing":symbols,"observations":0}
     with sqlite3.connect(db_path) as con:
+        con.executescript(QUOTE_SCHEMA)
         found=con.execute(
             """SELECT symbol,COUNT(*) FROM market_quotes
                WHERE market=? AND received_at_utc>=? AND received_at_utc<?
