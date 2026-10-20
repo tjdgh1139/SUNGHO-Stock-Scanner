@@ -5,6 +5,7 @@ not true high/low excursions or realizable trade returns.
 """
 import sqlite3
 from pathlib import Path
+from atlas_market_quote_store import SCHEMA as QUOTE_SCHEMA
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS research_signals (
@@ -35,6 +36,7 @@ def save_signal(db_path: str, *, market: str, symbol: str, signal_at_utc: str,
 def snapshot_performance(db_path: str, signal_id: int) -> dict:
     with sqlite3.connect(db_path) as con:
         con.executescript(SCHEMA)
+        con.executescript(QUOTE_SCHEMA)
         con.row_factory=sqlite3.Row
         row=con.execute("SELECT * FROM research_signals WHERE id=?",(signal_id,)).fetchone()
         if row is None:
