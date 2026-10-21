@@ -4,7 +4,7 @@ import time
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from atlas_kis_readonly import WATCHLIST, QuoteUnavailable, token_request, quote_request
-from flow_adapter import evaluate_kis_flow
+from atlas_safe_flow import evaluate_safe_flow
 
 st.set_page_config(page_title="ATLAS | 실시간 수급 점검", page_icon="📈", layout="wide")
 st.title("📈 ATLAS · KIS 장중 감시")
@@ -57,7 +57,7 @@ if refresh and time.monotonic() - st.session_state.atlas_last_poll >= 12:
                 # REST lacks authenticated trade strength, program flow and exchange trade timestamps.
                 # Call the integrated evaluator: it must fail closed rather than invent a BUY.
                 st.session_state["atlas_signal_" + identity] = (
-                    evaluate_kis_flow(previous, row, now=datetime.now(timezone.utc))
+                    evaluate_safe_flow(previous, row, now=datetime.now(timezone.utc))
                     if previous else {"signal":"WAIT","reason":"first_snapshot"}
                 )
             except QuoteUnavailable as exc:

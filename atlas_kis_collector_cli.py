@@ -34,7 +34,7 @@ def main(argv=None):
     if not key or not secret:
         raise RuntimeError("KIS credentials are not configured")
     try:
-        token=get_token(key,secret)
+        token=get_token(key,secret,cache_path="/home/atlasdeploy/staging/secrets/kis_token.json")
     except Exception as exc:
         # Do not print broker exception messages: they can contain credentials.
         print(json.dumps({"status":"AUTH_FAILED","error_type":type(exc).__name__}))
