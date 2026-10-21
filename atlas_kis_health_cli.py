@@ -8,6 +8,7 @@ import json
 import os
 from atlas_cycle_coordinator import run_cycle
 from atlas_kis_quote_normalizer import normalize_kis_quote
+from atlas_request_pacer import RequestPacer
 
 def main(argv=None):
     parser=argparse.ArgumentParser()
@@ -34,7 +35,9 @@ def main(argv=None):
     except Exception as exc:
         print(json.dumps({"status":"AUTH_OR_IMPORT_FAILED","error_type":type(exc).__name__}))
         return 3
+    pacer=RequestPacer(min_interval_seconds=0.5)
     def provider(symbol):
+        pacer.before_request()
         return normalize_kis_quote(quote_request(symbol,key,secret,token))
     outcome=run_cycle(args.db,symbols,provider,heartbeat_db_path=args.health_db,market="KRX")
     print(json.dumps({"status":outcome.health.state,"reason":outcome.health.reason,
