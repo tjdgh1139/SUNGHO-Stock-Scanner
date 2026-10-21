@@ -33,7 +33,7 @@ class CollectorCliTests(unittest.TestCase):
 
     def test_fake_broker_end_to_end_sqlite(self):
         fake_token=types.ModuleType("atlas_kis_token_cache")
-        fake_token.get_token=lambda *args: "FAKE_TOKEN"
+        fake_token.get_token=lambda *args, **kwargs: "FAKE_TOKEN"
         fake_quote=types.ModuleType("atlas_kis_readonly")
         calls=[]
         def quote(symbol,key,secret,token):
