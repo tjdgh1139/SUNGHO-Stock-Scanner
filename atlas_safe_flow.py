@@ -4,6 +4,12 @@ from flow_adapter import evaluate_kis_flow
 
 def evaluate_safe_flow(previous, current, *, now,
                        expected_turnover_per_min=None):
+    # No authenticated exchange-time provider is connected yet.
+    # Fail closed regardless of untrusted freshness labels.
+    return {"signal": "WAIT",
+            "reason": "VERIFIED_PROVIDER_NOT_CONNECTED",
+            "quality_blocked": True}
+
     for row in (previous, current):
         quote = {
             "received_at_utc": row.get("trade_received_utc"),

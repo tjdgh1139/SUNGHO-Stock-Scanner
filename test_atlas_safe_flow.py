@@ -10,7 +10,9 @@ def test_simulated_verified_candidate():
         a, b, now=NOW + timedelta(minutes=1, seconds=10),
         expected_turnover_per_min=100_000_000
     )
-    assert result["signal"] == "BUY_CANDIDATE"
+    assert result["signal"] == "WAIT"
+    assert result["quality_blocked"] is True
+    assert result["reason"] == "VERIFIED_PROVIDER_NOT_CONNECTED"
 
 def test_rest_only_must_wait():
     a, b = sample()
