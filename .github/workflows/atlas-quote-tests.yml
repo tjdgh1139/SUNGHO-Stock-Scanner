@@ -28,6 +28,7 @@ on:
       - 'atlas_kis_health_cli.py'
       - 'atlas_exchange_session_gate.py'
       - 'atlas_staging_scheduler_gate.py'
+      - 'test_atlas_staging_scheduler_gate.py'
       - 'atlas_krx_calendar_export.py'
       - 'atlas_calendar_refresh.py'
       - 'atlas_request_pacer.py'
