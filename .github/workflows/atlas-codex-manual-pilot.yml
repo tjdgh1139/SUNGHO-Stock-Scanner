@@ -124,6 +124,20 @@ jobs:
         run: |
           set -euo pipefail
           branch="atlas/ai-pilot-${RUN_ID}"
+          # A retry may reuse a branch created by the previous attempt.
+          # Never overwrite an existing remote branch or duplicate a PR.
+          existing_pr="$(gh pr list --state all --head "$branch" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing_pr" ]; then
+            echo "Existing PR #$existing_pr for $branch; nothing to recreate."
+            exit 0
+          fi
+          if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
+            echo "Remote branch already exists; create its draft PR without pushing."
+            gh pr create --draft --base atlas/market-data-storage-staging --head "$branch" \
+              --title "ATLAS Codex test-only pilot #${RUN_ID}" \
+              --body "Automated test-only proposal. Requires human review and passing CI. No auto-merge or deployment."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
