@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 import sys
+import sqlite3
 from datetime import datetime, timezone, date, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -21,6 +22,7 @@ def main(argv=None, *, now_utc=None, collector=None):
     parser.add_argument("--lock-file",required=True)
     parser.add_argument("--db",required=True)
     parser.add_argument("--health-db",required=True)
+    parser.add_argument("--audit-db")
     parser.add_argument("--symbols",nargs="+",required=True)
     parser.add_argument("--dry-run",action="store_true")
     args=parser.parse_args(argv)
@@ -62,8 +64,18 @@ def main(argv=None, *, now_utc=None, collector=None):
             return 0
         if collector is None:
             from atlas_kis_health_cli import main as collector
-        return collector(["--db",args.db,"--health-db",args.health_db,
+        result=collector(["--db",args.db,"--health-db",args.health_db,
                           "--symbols",*args.symbols])
+        if result != 0 or not args.audit_db:
+            return result
+        try:
+            from atlas_quote_quality_audit import audit_latest
+            audit=audit_latest(args.db,args.audit_db)
+            print(json.dumps({"status":"AUDIT_RECORDED",**audit}))
+            return 0
+        except (OSError,ValueError,sqlite3.Error) as exc:
+            print(json.dumps({"status":"AUDIT_FAILED","error_type":type(exc).__name__}))
+            return 4
 
 if __name__=="__main__":
     raise SystemExit(main())
