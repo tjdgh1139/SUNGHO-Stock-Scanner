@@ -42,3 +42,32 @@ jobs:
             Do not call brokerage APIs, place orders, or use network access.
             Keep changes minimal and explain them in the final response.
             No commits, pushes, PR creation, or deployment.
+      - name: Verify changed paths and run focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only --diff-filter=ACMRD > /tmp/atlas-changed-paths.txt
+          test -s /tmp/atlas-changed-paths.txt
+          mapfile -t paths < /tmp/atlas-changed-paths.txt
+          python atlas_ai_change_scope.py "${paths[@]}"
+          python -m unittest -v test_atlas_ai_change_scope
+          for path in "${paths[@]}"; do
+            if [[ "$path" == test_atlas_*.py ]]; then
+              python -m unittest -v "${path%.py}"
+            fi
+          done
+          git diff --check
+      - name: Preserve reviewed patch (no push)
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --binary > atlas-codex-pilot.patch
+          test -s atlas-codex-pilot.patch
+      - name: Upload patch for human review
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-codex-pilot-patch
+          path: atlas-codex-pilot.patch
+          retention-days: 14
