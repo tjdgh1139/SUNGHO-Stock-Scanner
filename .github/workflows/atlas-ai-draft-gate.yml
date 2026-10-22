@@ -1,0 +1,39 @@
+name: ATLAS AI draft change gate
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - atlas/market-data-storage-staging
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  scope-and-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check changed paths (pull requests only)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" > changed.txt
+          if [ ! -s changed.txt ]; then
+            echo "No changes to review"; exit 1
+          fi
+          mapfile -t paths < changed.txt
+          python atlas_ai_change_scope.py "${paths[@]}"
+      - name: Offline scope regression tests
+        run: python -m unittest -v test_atlas_ai_change_scope
