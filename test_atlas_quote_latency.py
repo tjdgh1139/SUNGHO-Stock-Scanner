@@ -20,8 +20,15 @@ class LatencyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db=str(Path(d)/"latency.sqlite")
             save_latency(db,{"symbol":"000660","duration_seconds":0.3,"status":"OK"})
+            save_latency(db,{"symbol":"005930","duration_seconds":0.5,"status":"FAILED"})
             with sqlite3.connect(db) as c:
-                self.assertEqual(c.execute("SELECT COUNT(*) FROM quote_latency").fetchone()[0],1)
+                rows=c.execute(
+                    "SELECT symbol,duration_seconds,status FROM quote_latency ORDER BY id"
+                ).fetchall()
+                self.assertEqual(rows,[
+                    ("000660",0.3,"OK"),
+                    ("005930",0.5,"FAILED"),
+                ])
     def test_rejects_nonfinite_and_invalid_symbols(self):
         with tempfile.TemporaryDirectory() as d:
             db=str(Path(d)/"latency.sqlite")
