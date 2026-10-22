@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   scope-and-tests:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'atlas-ai-draft')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
