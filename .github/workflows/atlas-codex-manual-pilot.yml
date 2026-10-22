@@ -107,6 +107,13 @@ jobs:
           git apply --check /tmp/atlas-proposal/atlas-codex-pilot.patch
           git apply /tmp/atlas-proposal/atlas-codex-pilot.patch
           git diff --check
+          # Reject untracked additions, including untracked symlinks or executable files.
+          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "Untracked files are forbidden in privileged job"; exit 1
+          fi
+          if [ -n "$(git diff --name-only --diff-filter=A)" ]; then
+            echo "New files are forbidden in pilot"; exit 1
+          fi
           git diff --name-only --diff-filter=ACMRD > /tmp/atlas-proposal/paths.txt
           test -s /tmp/atlas-proposal/paths.txt
           mapfile -t paths < /tmp/atlas-proposal/paths.txt
