@@ -1,6 +1,12 @@
 name: ATLAS Codex manual pilot
 on:
   workflow_dispatch:
+    inputs:
+      confirm_paid_ai_run:
+        description: 'I approve one billable Codex pilot run (no deployment)'
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -11,6 +17,7 @@ concurrency:
 
 jobs:
   codex:
+    if: inputs.confirm_paid_ai_run == true
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
