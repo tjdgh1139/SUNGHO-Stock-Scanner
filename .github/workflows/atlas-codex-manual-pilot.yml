@@ -71,3 +71,57 @@ jobs:
           name: atlas-codex-pilot-patch
           path: atlas-codex-pilot.patch
           retention-days: 14
+
+  draft-pr:
+    needs: codex
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: atlas/market-data-storage-staging
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-codex-pilot-patch
+          path: /tmp/atlas-proposal
+      - name: Validate patch without executing generated code
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/atlas-proposal/atlas-codex-pilot.patch
+          git apply --check /tmp/atlas-proposal/atlas-codex-pilot.patch
+          git apply /tmp/atlas-proposal/atlas-codex-pilot.patch
+          git diff --check
+          git diff --name-only --diff-filter=ACMRD > /tmp/atlas-proposal/paths.txt
+          test -s /tmp/atlas-proposal/paths.txt
+          mapfile -t paths < /tmp/atlas-proposal/paths.txt
+          python atlas_ai_change_scope.py "${paths[@]}"
+          # No generated code is executed in this privileged job.
+          if git diff --name-only --diff-filter=T | grep .; then
+            echo "File type changes are forbidden"; exit 1
+          fi
+          while IFS= read -r path; do
+            if [ -L "$path" ]; then echo "Symlink forbidden: $path"; exit 1; fi
+          done < /tmp/atlas-proposal/paths.txt
+      - name: Submit draft PR (never merge)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="atlas/ai-pilot-${RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add -- $(cat /tmp/atlas-proposal/paths.txt)
+          git commit -m "test: Codex pilot draft proposal"
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push origin "HEAD:refs/heads/$branch"
+          gh pr create --draft --base atlas/market-data-storage-staging --head "$branch" \
+            --title "ATLAS Codex test-only pilot #${RUN_ID}" \
+            --body "Automated test-only proposal. Requires human review and passing CI. No auto-merge or deployment."
