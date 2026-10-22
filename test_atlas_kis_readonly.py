@@ -78,3 +78,17 @@ def test_invalid_symbol_rejected_before_network():
     with pytest.raises(QuoteUnavailable):
         quote_request("00066X","key","secret","token",
                       allowed_codes=("00066X",),get=get_success)
+
+def test_http_429_has_typed_error_without_retry():
+    from atlas_kis_readonly import QuoteRateLimited
+    calls=[]
+    class LimitedResponse:
+        status_code=429
+        def raise_for_status(self):
+            raise AssertionError("must detect 429 before generic raise")
+    def limited_get(*args,**kwargs):
+        calls.append(1)
+        return LimitedResponse()
+    with pytest.raises(QuoteRateLimited):
+        quote_request("000660","key","secret","token",get=limited_get)
+    assert len(calls)==1
