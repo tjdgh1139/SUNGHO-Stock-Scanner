@@ -1,5 +1,6 @@
 """Local monotonic quote latency recorder; never stores credentials or orders."""
 import sqlite3
+import math
 import time
 from pathlib import Path
 
@@ -15,7 +16,11 @@ def timed_quote(symbol, provider, *, clock=None):
     return result,{"symbol":symbol,"duration_seconds":duration,"status":"OK"}
 
 def save_latency(db_path, event):
-    if event["status"] not in ("OK","FAILED") or event["duration_seconds"]<0:
+    if (event["status"] not in ("OK","FAILED") or
+        not isinstance(event["duration_seconds"],(int,float)) or
+        not math.isfinite(event["duration_seconds"]) or event["duration_seconds"]<0 or
+        not isinstance(event["symbol"],str) or len(event["symbol"])!=6 or
+        not event["symbol"].isascii() or not event["symbol"].isdigit()):
         raise ValueError("invalid event")
     Path(db_path).parent.mkdir(parents=True,exist_ok=True)
     with sqlite3.connect(db_path) as db:
