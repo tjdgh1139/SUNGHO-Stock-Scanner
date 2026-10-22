@@ -54,6 +54,7 @@ class ReceiptGapTests(unittest.TestCase):
             result=receipt_gaps(path,regular_session_only=True,calendar=Calendar())
             self.assertEqual(result[0]["max_gap_seconds"],300)
             self.assertEqual(result[0]["gaps_over_threshold"],0)
+            self.assertIn("calendar-verified",result[0]["note"])
 
 if __name__=="__main__":
     unittest.main()
