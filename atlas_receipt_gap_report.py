@@ -6,12 +6,14 @@ from datetime import datetime, time
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
-def receipt_gaps(db_path, *, market="KRX", threshold_seconds=420, regular_session_only=False):
+def receipt_gaps(db_path, *, market="KRX", threshold_seconds=420, regular_session_only=False, calendar=None):
     if threshold_seconds<=0:
         raise ValueError("threshold must be positive")
     with sqlite3.connect("file:"+str(Path(db_path).resolve())+"?mode=ro",uri=True) as db:
         rows=db.execute("""SELECT symbol,received_at_utc FROM market_quotes
           WHERE market=? ORDER BY symbol,received_at_utc,id""",(market,)).fetchall()
+    if calendar is not None and not regular_session_only:
+        raise ValueError("calendar requires regular-session-only")
     grouped={}
     for symbol,stamp in rows:
         grouped.setdefault(symbol,[]).append(stamp)
@@ -29,7 +31,9 @@ def receipt_gaps(db_path, *, market="KRX", threshold_seconds=420, regular_sessio
                     local=t.astimezone(ZoneInfo("Asia/Seoul"))
                     # Clock window alone is insufficient to verify holidays.
                     # Restrict comparisons to same weekday and regular hours.
-                    if local.weekday()>=5 or not (time(9,0)<=local.time()<time(15,30)):
+                    if (local.weekday()>=5 or
+                        (calendar is not None and not calendar.is_session(local.date().isoformat())) or
+                        not (time(9,0)<=local.time()<time(15,30))):
                         prev=None
                         continue
                     if prev is not None and prev.astimezone(ZoneInfo("Asia/Seoul")).date()!=local.date():
@@ -56,7 +60,14 @@ def main(argv=None):
     p.add_argument("--db",required=True)
     p.add_argument("--threshold-seconds",type=float,default=420)
     p.add_argument("--regular-session-only",action="store_true")
+    p.add_argument("--verify-krx-calendar",action="store_true")
     args=p.parse_args(argv)
-    print(json.dumps(receipt_gaps(args.db,threshold_seconds=args.threshold_seconds,regular_session_only=args.regular_session_only)))
+    if args.verify_krx_calendar and not args.regular_session_only:
+        p.error("--verify-krx-calendar requires --regular-session-only")
+    calendar=None
+    if args.verify_krx_calendar:
+        import exchange_calendars as xc
+        calendar=xc.get_calendar("XKRX")
+    print(json.dumps(receipt_gaps(args.db,threshold_seconds=args.threshold_seconds,regular_session_only=args.regular_session_only,calendar=calendar)))
 if __name__=="__main__":
     main()
