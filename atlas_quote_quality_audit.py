@@ -31,3 +31,16 @@ def audit_latest(quote_db, audit_db, *, now_utc=None):
             (market,symbol,checked_at_utc,received_at_utc,status,reason)
             VALUES (?,?,?,?,?,?)""",records)
     return {"audited":len(records),"blocked":len(records),"eligible":0}
+
+def main(argv=None):
+    import argparse
+    import json
+    parser=argparse.ArgumentParser(description="Audit stored KRX quotes without placing orders")
+    parser.add_argument("--db", required=True)
+    parser.add_argument("--audit-db", required=True)
+    args=parser.parse_args(argv)
+    print(json.dumps(audit_latest(args.db,args.audit_db),ensure_ascii=False))
+    return 0
+
+if __name__=="__main__":
+    raise SystemExit(main())
