@@ -2,10 +2,11 @@
 import argparse
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
-def receipt_gaps(db_path, *, market="KRX", threshold_seconds=420):
+def receipt_gaps(db_path, *, market="KRX", threshold_seconds=420, regular_session_only=False):
     if threshold_seconds<=0:
         raise ValueError("threshold must be positive")
     with sqlite3.connect("file:"+str(Path(db_path).resolve())+"?mode=ro",uri=True) as db:
@@ -24,6 +25,15 @@ def receipt_gaps(db_path, *, market="KRX", threshold_seconds=420):
                 t=datetime.fromisoformat(stamp.replace("Z","+00:00"))
                 if t.tzinfo is None:
                     raise ValueError("timezone missing")
+                if regular_session_only:
+                    local=t.astimezone(ZoneInfo("Asia/Seoul"))
+                    # Clock window alone is insufficient to verify holidays.
+                    # Restrict comparisons to same weekday and regular hours.
+                    if local.weekday()>=5 or not (time(9,0)<=local.time()<time(15,30)):
+                        prev=None
+                        continue
+                    if prev is not None and prev.astimezone(ZoneInfo("Asia/Seoul")).date()!=local.date():
+                        prev=None
                 if prev is not None:
                     gap=(t-prev).total_seconds()
                     if gap>=0:
@@ -38,14 +48,15 @@ def receipt_gaps(db_path, *, market="KRX", threshold_seconds=420):
           "max_gap_seconds":round(max(gaps),2) if gaps else None,
           "gaps_over_threshold":sum(g>threshold_seconds for g in gaps),
           "invalid_timestamps":invalid,
-          "note":"Includes overnight/closed-market gaps; not a market-hours SLA."})
+          "note":("Weekday KST 09:00-15:30 same-day gaps only; holidays not verified." if regular_session_only else "Includes overnight/closed-market gaps; not a market-hours SLA.")})
     return report
 
 def main(argv=None):
     p=argparse.ArgumentParser()
     p.add_argument("--db",required=True)
     p.add_argument("--threshold-seconds",type=float,default=420)
+    p.add_argument("--regular-session-only",action="store_true")
     args=p.parse_args(argv)
-    print(json.dumps(receipt_gaps(args.db,threshold_seconds=args.threshold_seconds)))
+    print(json.dumps(receipt_gaps(args.db,threshold_seconds=args.threshold_seconds,regular_session_only=args.regular_session_only)))
 if __name__=="__main__":
     main()
