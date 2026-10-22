@@ -17,7 +17,8 @@ class CycleResult:
 
 def collect_cycle(db_path: str, symbols: Iterable[str],
                   provider: Callable[[str], Mapping[str, Any]],
-                  *, received_at_utc: str | None = None) -> CycleResult:
+                  *, received_at_utc: str | None = None,
+                  stop_on: tuple[type[Exception], ...] = ()) -> CycleResult:
     result = CycleResult()
     for symbol in dict.fromkeys(symbols):
         result.attempted += 1
@@ -31,4 +32,6 @@ def collect_cycle(db_path: str, symbols: Iterable[str],
         except Exception as exc:
             # Avoid logging provider exception details: some SDKs include secrets.
             result.failed[str(symbol)] = type(exc).__name__
+            if isinstance(exc, stop_on):
+                break
     return result
