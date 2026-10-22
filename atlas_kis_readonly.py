@@ -47,7 +47,7 @@ def quote_request(code, key, secret, token, *, get=requests.get, market="J", now
                                 "tr_id": "FHKST01010100", "custtype": "P"},
                        params={"FID_COND_MRKT_DIV_CODE": market,
                                "FID_INPUT_ISCD": code}, timeout=8)
-        if response.status_code == 429:
+        if getattr(response, "status_code", None) == 429:
             raise QuoteRateLimited("KIS quote request rate limited")
         response.raise_for_status()
         body = response.json()
