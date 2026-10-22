@@ -100,6 +100,16 @@ jobs:
           git diff --name-only --diff-filter=ACMRD > /tmp/atlas-proposal/paths.txt
           test -s /tmp/atlas-proposal/paths.txt
           mapfile -t paths < /tmp/atlas-proposal/paths.txt
+          # Pilot is restricted to exactly one existing test file, never deletions.
+          if [ "${#paths[@]}" -ne 1 ]; then
+            echo "Pilot must change exactly one test file"; exit 1
+          fi
+          if git diff --name-only --diff-filter=D | grep -q .; then
+            echo "File deletions are forbidden"; exit 1
+          fi
+          if [[ ! "${paths[0]}" =~ ^test_atlas_[A-Za-z0-9_]+[.]py$ ]]; then
+            echo "Pilot may only change an existing test_atlas_*.py file"; exit 1
+          fi
           # Do not execute untrusted repository code in this write-enabled job.
           for path in "${paths[@]}"; do
             if [[ ! "$path" =~ ^test_atlas_[A-Za-z0-9_]+[.]py$ ]] &&
