@@ -22,5 +22,17 @@ class LatencyTests(unittest.TestCase):
             save_latency(db,{"symbol":"000660","duration_seconds":0.3,"status":"OK"})
             with sqlite3.connect(db) as c:
                 self.assertEqual(c.execute("SELECT COUNT(*) FROM quote_latency").fetchone()[0],1)
+    def test_rejects_nonfinite_and_invalid_symbols(self):
+        with tempfile.TemporaryDirectory() as d:
+            db=str(Path(d)/"latency.sqlite")
+            for event in (
+                {"symbol":"000660","duration_seconds":float("nan"),"status":"OK"},
+                {"symbol":"000660","duration_seconds":float("inf"),"status":"FAILED"},
+                {"symbol":"00066X","duration_seconds":0.3,"status":"OK"},
+            ):
+                with self.assertRaises(ValueError):
+                    save_latency(db,event)
+            self.assertFalse(Path(db).exists())
+
 if __name__=="__main__":
     unittest.main()
