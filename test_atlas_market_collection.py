@@ -54,5 +54,25 @@ class CollectionTests(unittest.TestCase):
             self.assertNotIn("private-credential",str(result.failed))
             self.assertIsNone(latest_quote(db,"KRX","000660"))
 
+    def test_rate_limit_stops_after_preserving_earlier_quote(self):
+        class RateLimited(Exception):
+            pass
+        with tempfile.TemporaryDirectory() as folder:
+            db=str(Path(folder)/"quotes.db")
+            calls=[]
+            def provider(symbol):
+                calls.append(symbol)
+                if symbol=="005930":
+                    raise RateLimited("mock 429")
+                return {"price":1000,"volume":10,"turnover":10000}
+            result=collect_cycle(db,["000660","005930","009150"],provider,
+                received_at_utc="2026-10-20T01:00:00+00:00",stop_on=(RateLimited,))
+            self.assertEqual(calls,["000660","005930"])
+            self.assertEqual(result.attempted,2)
+            self.assertEqual(result.stored,1)
+            self.assertEqual(result.failed,{"005930":"RateLimited"})
+            self.assertIsNotNone(latest_quote(db,"KRX","000660"))
+            self.assertIsNone(latest_quote(db,"KRX","009150"))
+
 if __name__=="__main__":
     unittest.main()
