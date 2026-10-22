@@ -9,11 +9,11 @@ from pathlib import Path
 def receipt_gaps(db_path, *, market="KRX", threshold_seconds=420, regular_session_only=False, calendar=None):
     if threshold_seconds<=0:
         raise ValueError("threshold must be positive")
+    if calendar is not None and not regular_session_only:
+        raise ValueError("calendar requires regular-session-only")
     with sqlite3.connect("file:"+str(Path(db_path).resolve())+"?mode=ro",uri=True) as db:
         rows=db.execute("""SELECT symbol,received_at_utc FROM market_quotes
           WHERE market=? ORDER BY symbol,received_at_utc,id""",(market,)).fetchall()
-    if calendar is not None and not regular_session_only:
-        raise ValueError("calendar requires regular-session-only")
     grouped={}
     for symbol,stamp in rows:
         grouped.setdefault(symbol,[]).append(stamp)
@@ -52,7 +52,7 @@ def receipt_gaps(db_path, *, market="KRX", threshold_seconds=420, regular_sessio
           "max_gap_seconds":round(max(gaps),2) if gaps else None,
           "gaps_over_threshold":sum(g>threshold_seconds for g in gaps),
           "invalid_timestamps":invalid,
-          "note":("Weekday KST 09:00-15:30 same-day gaps only; holidays not verified." if regular_session_only else "Includes overnight/closed-market gaps; not a market-hours SLA.")})
+          "note":("XKRX calendar-verified regular-session same-day gaps; not an exchange-time SLA." if calendar is not None else "Weekday KST 09:00-15:30 same-day gaps only; holidays not verified." if regular_session_only else "Includes overnight/closed-market gaps; not a market-hours SLA.")})
     return report
 
 def main(argv=None):
