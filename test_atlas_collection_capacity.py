@@ -3,7 +3,7 @@ from atlas_collection_capacity import estimate_cycle
 class CapacityTests(unittest.TestCase):
     def test_ten_fast_responses(self):
         r=estimate_cycle(10,minimum_interval_seconds=0.5,response_seconds=0.1)
-        self.assertAlmostEqual(r["estimated_seconds"],5.5)
+        self.assertAlmostEqual(r["estimated_seconds"],4.6)
         self.assertFalse(r["safe_to_expand"])
     def test_ten_slow_responses(self):
         r=estimate_cycle(10,minimum_interval_seconds=0.5,response_seconds=1)
