@@ -1,0 +1,33 @@
+name: ATLAS Draft PR no-cost preflight
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verify-existing-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify existing AI pilot PR without invoking Codex
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          number=19
+          head_expected="atlas/ai-pilot-39739621626"
+          base_expected="atlas/market-data-storage-staging"
+          state="$(gh pr view "$number" --json state --jq .state)"
+          draft="$(gh pr view "$number" --json isDraft --jq .isDraft)"
+          head="$(gh pr view "$number" --json headRefName --jq .headRefName)"
+          base="$(gh pr view "$number" --json baseRefName --jq .baseRefName)"
+          test "$state" = "OPEN"
+          test "$draft" = "true"
+          test "$head" = "$head_expected"
+          test "$base" = "$base_expected"
+          echo "PR #$number is open and draft; no AI call, push, or merge."
+          gh pr checks "$number" || true
