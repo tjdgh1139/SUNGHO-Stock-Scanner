@@ -30,7 +30,7 @@ def main(argv=None):
         return 3
     try:
         from atlas_kis_token_cache import get_token
-        from atlas_kis_readonly import quote_request
+        from atlas_kis_readonly import quote_request, QuoteRateLimited
         token=get_token(key,secret)
     except Exception as exc:
         print(json.dumps({"status":"AUTH_OR_IMPORT_FAILED","error_type":type(exc).__name__}))
@@ -39,7 +39,8 @@ def main(argv=None):
     def provider(symbol):
         pacer.before_request()
         return normalize_kis_quote(quote_request(symbol,key,secret,token))
-    outcome=run_cycle(args.db,symbols,provider,heartbeat_db_path=args.health_db,market="KRX")
+    outcome=run_cycle(args.db,symbols,provider,heartbeat_db_path=args.health_db,market="KRX",
+                      stop_on=(QuoteRateLimited,))
     print(json.dumps({"status":outcome.health.state,"reason":outcome.health.reason,
                       "attempted":outcome.result.attempted,"stored":outcome.result.stored,
                       "duplicates":outcome.result.duplicates,"failed":outcome.result.failed},
