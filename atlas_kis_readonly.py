@@ -30,8 +30,9 @@ def token_request(key, secret, *, post=requests.post):
         raise QuoteUnavailable("KIS 인증 요청에 실패했습니다.") from exc
 
 
-def quote_request(code, key, secret, token, *, get=requests.get, market="J", now=None):
-    if code not in {c for c, _ in WATCHLIST}:
+def quote_request(code, key, secret, token, *, get=requests.get, market="J", now=None, allowed_codes=None):
+    permitted = {c for c, _ in WATCHLIST} if allowed_codes is None else set(allowed_codes)
+    if not (isinstance(code,str) and len(code)==6 and code.isascii() and code.isdigit()) or code not in permitted:
         raise QuoteUnavailable("허용되지 않은 종목코드입니다.")
     if market not in ("J", "NX", "UN"):
         raise QuoteUnavailable("지원하지 않는 시장 코드입니다.")
