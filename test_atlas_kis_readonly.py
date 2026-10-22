@@ -59,3 +59,22 @@ def test_monitor_page_without_secrets_fails_closed():
     app = AppTest.from_file(str(page), default_timeout=20).run()
     assert not app.exception
     assert any("KIS 인증정보 미설정" in x.value for x in app.error)
+
+def test_explicit_allowlist_accepts_new_symbol_without_live_network():
+    def fake_get(url, **kwargs):
+        assert kwargs["params"]["FID_INPUT_ISCD"] == "012450"
+        return Response({"rt_cd":"0","output":{"stck_prpr":"1000",
+            "prdy_ctrt":"0","acml_vol":"10","acml_tr_pbmn":"10000"}})
+    result=quote_request("012450","key","secret","token",
+                         get=fake_get,now=NOW,allowed_codes=("012450",))
+    assert result["freshness"]=="REST_RECEIPT_ONLY"
+
+def test_explicit_allowlist_does_not_allow_other_codes():
+    with pytest.raises(QuoteUnavailable):
+        quote_request("000660","key","secret","token",
+                      allowed_codes=("012450",),get=get_success)
+
+def test_invalid_symbol_rejected_before_network():
+    with pytest.raises(QuoteUnavailable):
+        quote_request("00066X","key","secret","token",
+                      allowed_codes=("00066X",),get=get_success)
