@@ -114,6 +114,9 @@ jobs:
           if [ -n "$(git diff --name-only --diff-filter=A)" ]; then
             echo "New files are forbidden in pilot"; exit 1
           fi
+          if git diff --summary | grep -Eq 'mode change|create mode|delete mode|rename|copy'; then
+            echo "File metadata changes are forbidden in pilot"; exit 1
+          fi
           git diff --name-only --diff-filter=ACMRD > /tmp/atlas-proposal/paths.txt
           test -s /tmp/atlas-proposal/paths.txt
           mapfile -t paths < /tmp/atlas-proposal/paths.txt
