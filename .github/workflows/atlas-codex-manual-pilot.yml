@@ -1,0 +1,44 @@
+name: ATLAS Codex manual pilot
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-codex-manual-pilot
+  cancel-in-progress: false
+
+jobs:
+  codex:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: atlas/market-data-storage-staging
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require explicitly configured AI key
+        env:
+          ATLAS_CODEX_API_KEY: ${{ secrets.ATLAS_CODEX_API_KEY }}
+        run: |
+          if [ -z "$ATLAS_CODEX_API_KEY" ]; then
+            echo "::error::ATLAS_CODEX_API_KEY missing. No model was called."
+            exit 1
+          fi
+      - name: Codex test-only pilot (no push)
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.ATLAS_CODEX_API_KEY }}
+          safety-strategy: drop-sudo
+          permission-profile: ":workspace"
+          prompt: |
+            Inspect the repository and improve ONE existing test_atlas_*.py file.
+            Never modify production modules, workflow files, authentication,
+            secrets, deployment configuration, AGENTS.md or trading code.
+            Do not call brokerage APIs, place orders, or use network access.
+            Keep changes minimal and explain them in the final response.
+            No commits, pushes, PR creation, or deployment.
