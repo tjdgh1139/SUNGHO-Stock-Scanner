@@ -1,5 +1,12 @@
 name: ATLAS unattended development audit
 on:
+  push:
+    branches:
+      - atlas/market-data-storage-staging
+    paths:
+      - '.github/workflows/atlas-unattended-dev-audit.yml'
+      - 'atlas_*.py'
+      - 'test_atlas_*.py'
   workflow_dispatch:
   schedule:
     - cron: '17 11 * * *'
