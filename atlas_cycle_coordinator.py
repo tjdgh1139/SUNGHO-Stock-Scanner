@@ -18,9 +18,11 @@ class CycleOutcome:
 
 def run_cycle(db_path, symbols, provider, *, received_at_utc=None,
               consecutive_failures=0, last_status_code=None,
-              heartbeat_db_path=None, market='KRX', heartbeat_at_utc=None):
+              heartbeat_db_path=None, market='KRX', heartbeat_at_utc=None,
+              stop_on=()):
     universe=list(dict.fromkeys(symbols))
-    result=collect_cycle(db_path,universe,provider,received_at_utc=received_at_utc)
+    result=collect_cycle(db_path,universe,provider,received_at_utc=received_at_utc,
+                         stop_on=stop_on)
     health=evaluate_cycle(result,expected=len(universe))
     if health.state=="HEALTHY":
         retry=None
