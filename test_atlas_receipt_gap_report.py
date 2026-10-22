@@ -24,5 +24,19 @@ class ReceiptGapTests(unittest.TestCase):
             with self.assertRaises(sqlite3.OperationalError):
                 receipt_gaps(str(path))
             self.assertFalse(path.exists())
+    def test_regular_clock_ignores_overnight_and_weekend_gaps(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=str(Path(folder)/"q.sqlite")
+            with sqlite3.connect(path) as db:
+                db.execute("CREATE TABLE market_quotes(id INTEGER PRIMARY KEY,market TEXT,symbol TEXT,received_at_utc TEXT)")
+                db.executemany("INSERT INTO market_quotes VALUES (?,?,?,?)",[
+                    (1,"KRX","000660","2026-10-16T06:20:00Z"),
+                    (2,"KRX","000660","2026-10-19T00:00:00Z"),
+                    (3,"KRX","000660","2026-10-19T00:05:00Z"),
+                    (4,"KRX","000660","2026-10-19T00:15:00Z")])
+            report=receipt_gaps(path,regular_session_only=True)
+            self.assertEqual(report[0]["max_gap_seconds"],600)
+            self.assertEqual(report[0]["gaps_over_threshold"],1)
+
 if __name__=="__main__":
     unittest.main()
