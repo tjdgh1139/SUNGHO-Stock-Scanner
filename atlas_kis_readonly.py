@@ -13,6 +13,10 @@ WATCHLIST = (("005930", "삼성전자"), ("000660", "SK하이닉스"), ("009150"
 class QuoteUnavailable(Exception):
     pass
 
+class QuoteRateLimited(QuoteUnavailable):
+    """Confirmed HTTP 429; callers must not retry immediately."""
+    pass
+
 
 def token_request(key, secret, *, post=requests.post):
     if not key or not secret:
@@ -43,6 +47,8 @@ def quote_request(code, key, secret, token, *, get=requests.get, market="J", now
                                 "tr_id": "FHKST01010100", "custtype": "P"},
                        params={"FID_COND_MRKT_DIV_CODE": market,
                                "FID_INPUT_ISCD": code}, timeout=8)
+        if response.status_code == 429:
+            raise QuoteRateLimited("KIS quote request rate limited")
         response.raise_for_status()
         body = response.json()
         if str(body.get("rt_cd")) != "0" or not isinstance(body.get("output"), dict):
