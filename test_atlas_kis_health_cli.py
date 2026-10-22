@@ -50,5 +50,32 @@ class KISHealthCliTests(unittest.TestCase):
             self.assertEqual(calls,["000660"])
             self.assertEqual(latest_heartbeat(health,"KRX")["state"],"DEGRADED")
 
+    def test_second_symbol_rate_limit_preserves_first_quote(self):
+        from atlas_market_quote_store import latest_quote
+        token=types.ModuleType("atlas_kis_token_cache")
+        token.get_token=lambda k,s:"FAKE"
+        quote=types.ModuleType("atlas_kis_readonly")
+        quote.QuoteRateLimited=type("QuoteRateLimited",(Exception,),{})
+        calls=[]
+        def request(code,k,s,t):
+            calls.append(code)
+            if code=="005930":
+                raise quote.QuoteRateLimited("secret must not leak")
+            return {"현재가":1000,"누적거래량":10,
+                    "누적거래대금":10000,"등락%":0}
+        quote.quote_request=request
+        with tempfile.TemporaryDirectory() as folder:
+            db=str(Path(folder)/"quotes.sqlite")
+            health=str(Path(folder)/"health.sqlite")
+            output=io.StringIO()
+            with patch.dict(os.environ,{"KIS_APP_KEY":"TEST","KIS_APP_SECRET":"TEST"}),patch.dict(sys.modules,{"atlas_kis_token_cache":token,"atlas_kis_readonly":quote}),redirect_stdout(output):
+                rc=main(["--db",db,"--health-db",health,"--symbols","000660","005930","009150"])
+            self.assertEqual(rc,2)
+            self.assertEqual(calls,["000660","005930"])
+            self.assertIsNotNone(latest_quote(db,"KRX","000660"))
+            self.assertIsNone(latest_quote(db,"KRX","009150"))
+            self.assertEqual(latest_heartbeat(health,"KRX")["state"],"DEGRADED")
+            self.assertNotIn("secret must not leak",output.getvalue())
+
 if __name__=="__main__":
     unittest.main()
