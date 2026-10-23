@@ -56,3 +56,54 @@ def test_minute_record_requires_matching_day():
     assert minute_record(r,{"000660":quote()},now=OPEN+timedelta(days=1)) is None
     result=minute_record(r,{"000660":quote()},now=OPEN+timedelta(seconds=30))
     assert result["minute"]==1 and len(result["rows"])==1
+
+
+def ws_quote(stamp):
+    iso=stamp.isoformat()
+    return {"현재가":102,"quote_market":"J","market_date":"20261016",
+            "quote_received_utc":iso,"trade_received_utc":iso,
+            "book_received_utc":iso,"program_received_utc":iso}
+
+
+def test_each_krx_opening_minute_needs_its_own_authenticated_receipts():
+    frozen=freeze_candidates([candidate()],"KR",now=PRE)
+    for offset in range(5):
+        now=OPEN+timedelta(minutes=offset,seconds=30)
+        received=now-timedelta(seconds=2)
+        record=minute_record(frozen,{"000660":ws_quote(received)},
+                             now=now,ws_connected=True)
+        assert record["minute"]==offset+1
+        assert record["rows"][0]["price"]==102
+
+
+def test_previous_minute_trade_cannot_fill_next_minute_even_if_fresh():
+    frozen=freeze_candidates([candidate()],"KR",now=PRE)
+    now=OPEN+timedelta(minutes=1,seconds=3)
+    old=ws_quote(OPEN+timedelta(seconds=59))
+    row=minute_record(frozen,{"000660":old},now=now,ws_connected=True)["rows"][0]
+    assert row["price"] is None and row["status"].startswith("WAIT")
+
+
+def test_disconnected_or_missing_channel_or_rest_receipt_is_wait():
+    frozen=freeze_candidates([candidate()],"KR",now=PRE)
+    now=OPEN+timedelta(seconds=30)
+    q=ws_quote(now-timedelta(seconds=2))
+    cases=[(q,False),(quote(102,now-timedelta(seconds=2)),True),
+           ({k:v for k,v in q.items() if k!="book_received_utc"},True),
+           ({**q,"program_received_utc":(now-timedelta(seconds=12)).isoformat()},True),
+           ({**q,"quote_market":"NX"},True),
+           ({**q,"market_date":"20261015"},True),
+           ({**q,"quote_received_utc":now.isoformat()},True)]
+    for sample,connected in cases:
+        row=minute_record(frozen,{"000660":sample},now=now,ws_connected=connected)["rows"][0]
+        assert row["price"] is None and row["status"].startswith("WAIT")
+
+
+def test_us_http_receipt_is_not_an_authenticated_exchange_trade():
+    us_pre=datetime(2026,10,16,13,25,tzinfo=timezone.utc)
+    us_open=datetime(2026,10,16,13,30,tzinfo=timezone.utc)
+    frozen=freeze_candidates([candidate()],"US",now=us_pre)
+    row=minute_record(frozen,{"000660":{"현재가":102,
+         "quote_received_utc":(us_open+timedelta(seconds=20)).isoformat()}},
+         now=us_open+timedelta(seconds=25),ws_connected=True)["rows"][0]
+    assert row["price"] is None and "미국" in row["status"]
