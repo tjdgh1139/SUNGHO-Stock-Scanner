@@ -118,7 +118,29 @@ def assess_candidate(candidate,quote,*,now=None,market="KR"):
     return result
 
 
-def minute_record(frozen,quotes,*,now=None):
+
+def _verified_krx_minute_receipts(quote, now):
+    """Require same-minute trade and fresh independent KRX WS channel receipts.
+
+    The caller must separately confirm its authenticated KIS WS connection.
+    HTTP response receipt times cannot substitute for exchange trades.
+    """
+    if not isinstance(quote, dict) or quote.get("quote_market") != "J":
+        return False
+    if quote.get("market_date") != now.astimezone(ZONE["KR"]).strftime("%Y%m%d"):
+        return False
+    channel_stamps = [_time(quote.get(key)) for key in
+                      ("trade_received_utc", "book_received_utc", "program_received_utc")]
+    if any(stamp is None or not 0 <= (now-stamp).total_seconds() <= 10
+           for stamp in channel_stamps):
+        return False
+    if _time(quote.get("quote_received_utc")) != channel_stamps[0]:
+        return False
+    local_minute = now.astimezone(ZONE["KR"]).replace(second=0, microsecond=0)
+    trade_minute = channel_stamps[0].astimezone(ZONE["KR"]).replace(second=0, microsecond=0)
+    return trade_minute == local_minute
+
+def minute_record(frozen,quotes,*,now=None,ws_connected=False):
     now=now or datetime.now(timezone.utc)
     if not isinstance(frozen,dict) or frozen.get("market") not in ZONE:
         return None
@@ -132,7 +154,14 @@ def minute_record(frozen,quotes,*,now=None):
     rows=[]
     for candidate in frozen.get("candidates",[]):
         quote=quotes.get(candidate["symbol"])
-        assessment=assess_candidate(candidate,quote,now=now,market=market)
+        if market=="KR" and (not ws_connected or not _verified_krx_minute_receipts(quote,now)):
+            assessment={"status":"WAIT · 해당 분 KRX 체결/호가/프로그램 미검증",
+                        "price":None,"quote_age":None}
+        elif market=="US":
+            assessment={"status":"WAIT · 미국 거래소 체결 인증 미검증",
+                        "price":None,"quote_age":None}
+        else:
+            assessment=assess_candidate(candidate,quote,now=now,market=market)
         rows.append({**candidate,**assessment})
     return {"minute":minute,"market":market,"observed_at_utc":now.isoformat(),
             "rows":rows}
