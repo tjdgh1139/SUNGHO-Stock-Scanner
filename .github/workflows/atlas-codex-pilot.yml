@@ -1,0 +1,50 @@
+name: ATLAS Codex pilot - manual only
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-codex-pilot
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Confirm OpenAI API credential is configured
+        env:
+          CODEX_KEY: ${{ secrets.ATLAS_CODEX_API_KEY }}
+        shell: bash
+        run: |
+          if [ -z "$CODEX_KEY" ]; then
+            echo "::error::ATLAS_CODEX_API_KEY is not configured. No AI call was made."
+            exit 1
+          fi
+      - name: Run restricted Codex pilot
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.ATLAS_CODEX_API_KEY }}
+          safety-strategy: drop-sudo
+          permission-profile: ":workspace"
+          prompt: |
+            Pilot task: improve only an existing test_atlas_*.py unit test.
+            Do not edit application modules, workflows, AGENTS.md, credentials,
+            deployment files, or trading logic. Do not make network calls.
+            Do not execute live broker API requests or orders.
+            Keep the patch small and explain its purpose.
+      - name: Record pilot outcome
+        if: always()
+        shell: bash
+        run: |
+          echo "Pilot invoked. Review Codex logs and changes manually."
+          echo "No commits, pushes, merges or deployments are performed by this workflow."

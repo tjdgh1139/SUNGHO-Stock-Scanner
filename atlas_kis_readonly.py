@@ -13,6 +13,10 @@ WATCHLIST = (("005930", "삼성전자"), ("000660", "SK하이닉스"), ("009150"
 class QuoteUnavailable(Exception):
     pass
 
+class QuoteRateLimited(QuoteUnavailable):
+    """Confirmed HTTP 429; callers must not retry immediately."""
+    pass
+
 
 def token_request(key, secret, *, post=requests.post):
     if not key or not secret:
@@ -30,8 +34,9 @@ def token_request(key, secret, *, post=requests.post):
         raise QuoteUnavailable("KIS 인증 요청에 실패했습니다.") from exc
 
 
-def quote_request(code, key, secret, token, *, get=requests.get, market="J", now=None):
-    if code not in {c for c, _ in WATCHLIST}:
+def quote_request(code, key, secret, token, *, get=requests.get, market="J", now=None, allowed_codes=None):
+    permitted = {c for c, _ in WATCHLIST} if allowed_codes is None else set(allowed_codes)
+    if not (isinstance(code,str) and len(code)==6 and code.isascii() and code.isdigit()) or code not in permitted:
         raise QuoteUnavailable("허용되지 않은 종목코드입니다.")
     if market not in ("J", "NX", "UN"):
         raise QuoteUnavailable("지원하지 않는 시장 코드입니다.")
@@ -42,6 +47,8 @@ def quote_request(code, key, secret, token, *, get=requests.get, market="J", now
                                 "tr_id": "FHKST01010100", "custtype": "P"},
                        params={"FID_COND_MRKT_DIV_CODE": market,
                                "FID_INPUT_ISCD": code}, timeout=8)
+        if getattr(response, "status_code", None) == 429:
+            raise QuoteRateLimited("KIS quote request rate limited")
         response.raise_for_status()
         body = response.json()
         if str(body.get("rt_cd")) != "0" or not isinstance(body.get("output"), dict):
