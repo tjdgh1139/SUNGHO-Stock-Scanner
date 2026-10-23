@@ -39,7 +39,7 @@ def audit_0755(snapshot, *, verified_at, built_this_run, run_completed_at=None):
     done_kst = finished.astimezone(KST)
     if not (now_kst.hour == 7 and 55 <= now_kst.minute <= 59):
         return "MISSED", "verification did not finish before 08:00 KST"
-    if done_kst.date() != now_kst.date() or not (done_kst.hour == 7 and 55 <= done_kst.minute <= 59):
+    if finished < now or done_kst.date() != now_kst.date() or not (done_kst.hour == 7 and 55 <= done_kst.minute <= 59):
         return "MISSED", "workflow completion did not occur before 08:00 KST"
     if built_this_run is not True:
         return "MISSED", "07:55 run did not generate a fresh recheck snapshot"

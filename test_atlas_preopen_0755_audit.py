@@ -54,6 +54,9 @@ class Audit0755Tests(unittest.TestCase):
     def test_completion_on_different_day_fails_closed(self):
         self.assertEqual(self.check(run_completed_at="2026-10-21T22:58:00Z"), "MISSED")
 
+    def test_completion_before_verification_fails_closed(self):
+        self.assertEqual(self.check(run_completed_at="2026-10-22T22:57:00Z"), "MISSED")
+
     def test_invalid_coverage_type_fails_closed(self):
         self.assertEqual(self.check({**VALID, "coverage":{"attempted":"invalid","validated":3}}), "MISSED")
 
