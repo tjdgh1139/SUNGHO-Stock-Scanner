@@ -1,0 +1,21 @@
+name: ATLAS 0755 audit test verification
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-0755-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: atlas/preopen-0755-missed-audit-20261022
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify 0755 fail-closed audit offline
+        run: python -m unittest -v test_atlas_preopen_0755_audit
