@@ -117,13 +117,14 @@ def render_preopen_tracker(kis_quote_fn,kis_us_quote_fn,us_symbols,tape_factory,
                                             quotes[symbol]=q
                             except Exception:
                                 continue
-                        record=minute_record(frozen,quotes,now=datetime.now(timezone.utc))
+                        record=minute_record(frozen,quotes,now=datetime.now(timezone.utc),
+                                             ws_connected=(connected if market=="KR" else False))
                         if record:
-                            state[minute]=record
+                            state[record["minute"]]=record
                             st.session_state[statekey]=state
                     st.caption("개장 "+str(minute)+"분차 · "+str(len(state))+"/5분 확인")
                     st.write(" · ".join(("● "+str(m)+"분" if m in state else "○ "+str(m)+"분") for m in range(1,6)))
-                    current=state.get(minute) or state.get(max(state)) if state else None
+                    current=state.get(minute)
                     if current:
                         st.dataframe(pd.DataFrame([{
                             "종목":x["name"],"현재가":x["price"],
