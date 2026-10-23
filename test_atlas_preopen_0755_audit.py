@@ -47,6 +47,19 @@ class Audit0755Tests(unittest.TestCase):
     def test_live_claim_is_rejected(self):
         self.assertEqual(self.check({**VALID, "candidates":[{"source":"KIS LIVE"}]}), "MISSED")
 
+    def test_missing_snapshot_fails_closed(self):
+        status, _ = audit_0755(None, verified_at=VERIFIED, built_this_run=True)
+        self.assertEqual(status, "MISSED")
+
+    def test_completion_on_different_day_fails_closed(self):
+        self.assertEqual(self.check(run_completed_at="2026-10-21T22:58:00Z"), "MISSED")
+
+    def test_invalid_coverage_type_fails_closed(self):
+        self.assertEqual(self.check({**VALID, "coverage":{"attempted":"invalid","validated":3}}), "MISSED")
+
+    def test_future_snapshot_fails_closed(self):
+        self.assertEqual(self.check({**VALID, "generated_at_utc":"2026-10-22T22:59:00Z"}), "MISSED")
+
     def test_naive_timestamp_rejected(self):
         self.assertEqual(self.check({**VALID, "generated_at_utc":"2026-10-23T07:56:00"}), "MISSED")
 
