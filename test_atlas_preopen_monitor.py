@@ -60,7 +60,10 @@ def test_minute_record_requires_matching_day():
 
 def ws_quote(stamp):
     iso=stamp.isoformat()
+    # KST has no daylight-saving offset.
+    exchange_hhmmss=(stamp+timedelta(hours=9)).strftime("%H%M%S")
     return {"현재가":102,"quote_market":"J","market_date":"20261016",
+            "체결시간":exchange_hhmmss,
             "quote_received_utc":iso,"trade_received_utc":iso,
             "book_received_utc":iso,"program_received_utc":iso}
 
@@ -107,3 +110,27 @@ def test_us_http_receipt_is_not_an_authenticated_exchange_trade():
          "quote_received_utc":(us_open+timedelta(seconds=20)).isoformat()}},
          now=us_open+timedelta(seconds=25),ws_connected=True)["rows"][0]
     assert row["price"] is None and "미국" in row["status"]
+
+
+def test_fresh_ws_receipt_with_stale_exchange_execution_is_wait():
+    frozen=freeze_candidates([candidate()],"KR",now=PRE)
+    now=OPEN+timedelta(minutes=1,seconds=30)
+    q=ws_quote(now-timedelta(seconds=2))
+    # Last execution occurred over 10 seconds before the fresh WS receipt.
+    q["체결시간"]="090109"
+    row=minute_record(frozen,{"000660":q},now=now,ws_connected=True)["rows"][0]
+    assert row["price"] is None and row["status"].startswith("WAIT")
+
+
+def test_fresh_ws_receipt_with_previous_or_invalid_execution_is_wait():
+    frozen=freeze_candidates([candidate()],"KR",now=PRE)
+    now=OPEN+timedelta(minutes=1,seconds=4)
+    valid=ws_quote(now-timedelta(seconds=1))
+    for value in ("090059","090200","090160","0901","notatime",None):
+        quote={**valid}
+        if value is None:
+            quote.pop("체결시간")
+        else:
+            quote["체결시간"]=value
+        row=minute_record(frozen,{"000660":quote},now=now,ws_connected=True)["rows"][0]
+        assert row["price"] is None and row["status"].startswith("WAIT")
