@@ -136,9 +136,22 @@ def _verified_krx_minute_receipts(quote, now):
         return False
     if _time(quote.get("quote_received_utc")) != channel_stamps[0]:
         return False
-    local_minute = now.astimezone(ZONE["KR"]).replace(second=0, microsecond=0)
+    now_kst = now.astimezone(ZONE["KR"])
+    local_minute = now_kst.replace(second=0, microsecond=0)
     trade_minute = channel_stamps[0].astimezone(ZONE["KR"]).replace(second=0, microsecond=0)
-    return trade_minute == local_minute
+    if trade_minute != local_minute:
+        return False
+    # KIS trade packet contains the EXCHANGE execution time (HHMMSS).
+    # A newly received delayed/previous-minute trade is not a live observation.
+    hhmmss = quote.get("체결시간")
+    if not isinstance(hhmmss, str) or len(hhmmss) != 6 or not hhmmss.isascii() or not hhmmss.isdigit():
+        return False
+    hour, minute, second = int(hhmmss[:2]), int(hhmmss[2:4]), int(hhmmss[4:])
+    if hour > 23 or minute > 59 or second > 59:
+        return False
+    exchange_trade = now_kst.replace(hour=hour, minute=minute, second=second, microsecond=0)
+    exchange_age = (now_kst - exchange_trade).total_seconds()
+    return 0 <= exchange_age <= 10 and (hour, minute) == (now_kst.hour, now_kst.minute)
 
 def minute_record(frozen,quotes,*,now=None,ws_connected=False):
     now=now or datetime.now(timezone.utc)
