@@ -65,8 +65,22 @@ def audit_0755(snapshot, *, verified_at, built_this_run, run_completed_at=None):
         return "MISSED", "invalid validated coverage"
     if not (0 < validated <= attempted and 1 <= len(rows) <= min(5, validated)):
         return "MISSED", "no validated candidate publication"
-    if any(not isinstance(row, dict) or "NOT LIVE" not in str(row.get("source", "")) for row in rows):
-        return "MISSED", "candidate source evidence was not historical EOD"
+    # EOD WATCH must never be certified as the session's authenticated LIVE BUY.
+    for row in rows:
+        if not isinstance(row, dict):
+            return "MISSED", "candidate evidence missing"
+        source, status = row.get("source"), row.get("status")
+        if not isinstance(source, str) or "EOD" not in source or "NOT LIVE" not in source:
+            return "MISSED", "candidate source is not historical EOD"
+        if not isinstance(status, str) or not status.startswith("WATCH") or any(
+                claim in status.upper() for claim in ("BUY", "SELL")):
+            return "MISSED", "historical EOD candidate claims trading signal"
+        try:
+            last_date = datetime.strptime(row["last_trading_date"], "%Y-%m-%d").date()
+        except (KeyError, TypeError, ValueError):
+            return "MISSED", "historical EOD reference date invalid"
+        if not 1 <= (pub_kst.date() - last_date).days <= 5:
+            return "MISSED", "historical EOD reference date missing or stale"
     return "ON_TIME", "fresh EOD WATCH recheck published before 08:00 KST"
 
 
