@@ -1,24 +1,38 @@
 {
   "schema_version": 1,
   "market": "KR",
-  "session_date": "20261023",
-  "generated_at_utc": "2026-10-22T22:20:11.375396+00:00",
+  "session_date": "20261026",
+  "generated_at_utc": "2026-10-25T22:13:39.984464+00:00",
   "phase": "first",
   "coverage": {
     "attempted": 24,
-    "validated": 1
+    "validated": 2
   },
   "candidates": [
     {
       "symbol": "068270",
       "name": "셀트리온",
       "sector": "바이오",
-      "score": 52.8,
-      "last_close": 193500.0,
-      "last_trading_date": "2026-10-22",
-      "volume_ratio": 1.08,
-      "ma20_distance_pct": 5.19,
-      "last_day_pct": -1.78,
+      "score": 51.6,
+      "last_close": 192600.0,
+      "last_trading_date": "2026-10-23",
+      "volume_ratio": 0.96,
+      "ma20_distance_pct": 4.39,
+      "last_day_pct": -0.47,
+      "source": "FinanceDataReader historical EOD · NOT LIVE",
+      "status": "WATCH · pre-open technical screen",
+      "basis": "20일선·전일 거래량비·20일 고가 접근·과열 제외"
+    },
+    {
+      "symbol": "373220",
+      "name": "LG에너지솔루션",
+      "sector": "배터리",
+      "score": 38.5,
+      "last_close": 381500.0,
+      "last_trading_date": "2026-10-23",
+      "volume_ratio": 0.85,
+      "ma20_distance_pct": -1.32,
+      "last_day_pct": -2.55,
       "source": "FinanceDataReader historical EOD · NOT LIVE",
       "status": "WATCH · pre-open technical screen",
       "basis": "20일선·전일 거래량비·20일 고가 접근·과열 제외"
