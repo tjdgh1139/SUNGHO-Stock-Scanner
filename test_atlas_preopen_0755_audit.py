@@ -90,5 +90,31 @@ class Audit0755Tests(unittest.TestCase):
                   "session_date": "20261026", "candidates": [row]}
         self.assertEqual(self.check(monday, verified_at="2026-10-25T22:58:00Z"), "ON_TIME")
 
+    def test_oct_26_late_0755_workflow_is_missed_even_if_green(self):
+        previous_first = {
+            **VALID, "phase": "first", "session_date": "20261026",
+            "generated_at_utc": "2026-10-25T22:13:39Z",
+            "candidates": [
+                {**VALID["candidates"][0], "last_trading_date": "2026-10-23"}
+            ],
+        }
+        status = self.check(previous_first,
+                            verified_at="2026-10-25T23:06:13Z",
+                            built_this_run=False)
+        self.assertEqual(status, "MISSED")
+
+    def test_scheduled_0755_workflow_must_audit_both_before_and_after_push(self):
+        from pathlib import Path
+        workflow = (Path(__file__).resolve().parent / ".github" / "workflows"
+                    / "atlas-scheduled-preopen.yml").read_text(encoding="utf-8")
+        self.assertIn("- cron: '55 22 * * 0-4'", workflow)
+        self.assertIn("github.event.schedule == '55 22 * * 0-4'", workflow)
+        self.assertIn("ATLAS_PUBLISHED_RECHECK: ${{ steps.build.outputs.snapshot_changed }}", workflow)
+        self.assertLess(workflow.index("Preflight 07:55 KST recheck evidence"),
+                        workflow.index("Commit only if a verified snapshot exists"))
+        self.assertLess(workflow.index("Commit only if a verified snapshot exists"),
+                        workflow.index("Verify 07:55 KST publication before 08:00"))
+
+
 if __name__ == "__main__":
     unittest.main()
