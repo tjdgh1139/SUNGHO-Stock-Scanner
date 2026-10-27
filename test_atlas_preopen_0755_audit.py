@@ -68,6 +68,32 @@ class Audit0755Tests(unittest.TestCase):
         self.assertEqual(self.check({**VALID, "generated_at_utc":"2026-10-23T07:56:00"}), "MISSED")
 
 
+    def test_symbol_must_be_unique_six_digit_ascii_code(self):
+        for symbol in (None, 660, "00066", "０００６６０", "00ABC0"):
+            with self.subTest(symbol=symbol):
+                row = {**VALID["candidates"][0], "symbol": symbol}
+                self.assertEqual(self.check({**VALID, "candidates": [row]}), "MISSED")
+        duplicate = [VALID["candidates"][0], dict(VALID["candidates"][0])]
+        self.assertEqual(self.check({**VALID, "candidates": duplicate}), "MISSED")
+
+    def test_oct_27_green_workflow_with_no_0755_snapshot_is_missed(self):
+        # Oct 27 KST: 07:00 phase published at 07:23; nominal 07:55 run
+        # completed at 08:13, printed 'no publication', and left it unchanged.
+        first = {**VALID, "phase": "first", "session_date": "20261027",
+                 "generated_at_utc": "2026-10-26T22:23:01Z",
+                 "candidates": [{**VALID["candidates"][0],
+                                 "last_trading_date": "2026-10-26"}]}
+        self.assertEqual(self.check(first,
+            verified_at="2026-10-26T23:13:31Z", built_this_run=False,
+            run_completed_at="2026-10-26T23:13:34Z"), "MISSED")
+        # Even a hypothetical valid-looking recheck is invalid when completion
+        # is after 08:00 KST; GitHub's success conclusion is irrelevant.
+        recheck = {**first, "phase": "recheck",
+                   "generated_at_utc": "2026-10-26T22:56:00Z"}
+        self.assertEqual(self.check(recheck,
+            verified_at="2026-10-26T22:59:58Z", built_this_run=True,
+            run_completed_at="2026-10-26T23:13:34Z"), "MISSED")
+
     def test_historical_candidate_cannot_claim_buy_or_sell(self):
         for status in ("BUY", "SELL", "WATCH · BUY now", "WATCH · SELL now", "HOLD"):
             with self.subTest(status=status):
