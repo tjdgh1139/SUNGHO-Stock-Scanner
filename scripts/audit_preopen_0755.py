@@ -66,9 +66,15 @@ def audit_0755(snapshot, *, verified_at, built_this_run, run_completed_at=None):
     if not (0 < validated <= attempted and 1 <= len(rows) <= min(5, validated)):
         return "MISSED", "no validated candidate publication"
     # EOD WATCH must never be certified as the session's authenticated LIVE BUY.
+    seen_symbols = set()
     for row in rows:
         if not isinstance(row, dict):
             return "MISSED", "candidate evidence missing"
+        symbol = row.get("symbol")
+        if (not isinstance(symbol, str) or len(symbol) != 6 or
+                not symbol.isascii() or not symbol.isdigit() or symbol in seen_symbols):
+            return "MISSED", "candidate symbol missing, invalid, or duplicated"
+        seen_symbols.add(symbol)
         source, status = row.get("source"), row.get("status")
         if not isinstance(source, str) or "EOD" not in source or "NOT LIVE" not in source:
             return "MISSED", "candidate source is not historical EOD"
