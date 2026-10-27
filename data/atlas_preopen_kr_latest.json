@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "market": "KR",
-  "session_date": "20261027",
-  "generated_at_utc": "2026-10-26T22:23:01.939827+00:00",
+  "session_date": "20261028",
+  "generated_at_utc": "2026-10-27T22:26:45.925809+00:00",
   "phase": "first",
   "coverage": {
     "attempted": 24,
-    "validated": 1
+    "validated": 3
   },
   "candidates": [
     {
@@ -14,11 +14,39 @@
       "name": "셀트리온",
       "sector": "바이오",
       "score": 50.9,
-      "last_close": 190000.0,
-      "last_trading_date": "2026-10-26",
+      "last_close": 188900.0,
+      "last_trading_date": "2026-10-27",
       "volume_ratio": 0.89,
-      "ma20_distance_pct": 2.65,
-      "last_day_pct": -1.35,
+      "ma20_distance_pct": 1.76,
+      "last_day_pct": -0.58,
+      "source": "FinanceDataReader historical EOD · NOT LIVE",
+      "status": "WATCH · pre-open technical screen",
+      "basis": "20일선·전일 거래량비·20일 고가 접근·과열 제외"
+    },
+    {
+      "symbol": "035420",
+      "name": "NAVER",
+      "sector": "인터넷",
+      "score": 49.9,
+      "last_close": 181400.0,
+      "last_trading_date": "2026-10-27",
+      "volume_ratio": 1.19,
+      "ma20_distance_pct": -0.95,
+      "last_day_pct": 4.01,
+      "source": "FinanceDataReader historical EOD · NOT LIVE",
+      "status": "WATCH · pre-open technical screen",
+      "basis": "20일선·전일 거래량비·20일 고가 접근·과열 제외"
+    },
+    {
+      "symbol": "006400",
+      "name": "삼성SDI",
+      "sector": "배터리",
+      "score": 38.7,
+      "last_close": 513000.0,
+      "last_trading_date": "2026-10-27",
+      "volume_ratio": 0.87,
+      "ma20_distance_pct": -4.84,
+      "last_day_pct": 5.99,
       "source": "FinanceDataReader historical EOD · NOT LIVE",
       "status": "WATCH · pre-open technical screen",
       "basis": "20일선·전일 거래량비·20일 고가 접근·과열 제외"
