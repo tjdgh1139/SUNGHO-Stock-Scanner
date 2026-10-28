@@ -29,5 +29,22 @@ class MarketQuoteStoreTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     save_quote(db, **(base | bad))
 
+    def test_received_at_utc_normalizes_equivalent_formats_and_dedupes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = str(Path(folder) / "quotes.sqlite")
+            row = dict(market="KRX", symbol="000660", source="KIS_REST", price=1)
+            self.assertTrue(save_quote(db, **row, received_at_utc="2026-10-28T00:00:00Z"))
+            self.assertFalse(save_quote(db, **row, received_at_utc="2026-10-28T00:00:00.000000+00:00"))
+            self.assertEqual(latest_quote(db, "KRX", "000660")["received_at_utc"],
+                             "2026-10-28T00:00:00.000000+00:00")
+
+    def test_latest_quote_uses_true_instant_order_across_fractional_seconds(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = str(Path(folder) / "quotes.sqlite")
+            row = dict(market="KRX", symbol="000660", source="KIS_REST")
+            self.assertTrue(save_quote(db, **row, received_at_utc="2026-10-28T00:00:00Z", price=1))
+            self.assertTrue(save_quote(db, **row, received_at_utc="2026-10-28T00:00:00.500000+00:00", price=2))
+            self.assertEqual(latest_quote(db, "KRX", "000660")["price"], 2)
+
 if __name__ == "__main__":
     unittest.main()

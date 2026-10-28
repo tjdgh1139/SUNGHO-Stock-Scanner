@@ -39,9 +39,15 @@ def save_quote(db_path: str, *, market: str, symbol: str, source: str,
     """
     if not market or not symbol or not source:
         raise ValueError("market, symbol, and source are required")
-    stamp = datetime.fromisoformat(received_at_utc.replace("Z", "+00:00"))
+    try:
+        stamp = datetime.fromisoformat(received_at_utc.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("received_at_utc must be a valid UTC timestamp") from exc
     if stamp.tzinfo is None or stamp.utcoffset() != timezone.utc.utcoffset(stamp):
         raise ValueError("received_at_utc must include a UTC timezone")
+    # SQLite sorts this TEXT column lexically. A single fixed-width UTC format
+    # keeps actual instants ordered and prevents duplicate Z/+00:00 entries.
+    received_at_utc = stamp.astimezone(timezone.utc).isoformat(timespec="microseconds")
     if not (0 < float(price) < float("inf")):
         raise ValueError("invalid price")
     for value in (volume, turnover):
