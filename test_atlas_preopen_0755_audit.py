@@ -61,6 +61,33 @@ class Audit0755Tests(unittest.TestCase):
     def test_invalid_coverage_type_fails_closed(self):
         self.assertEqual(self.check({**VALID, "coverage":{"attempted":"invalid","validated":3}}), "MISSED")
 
+    def test_coverage_counts_must_be_exact_integers(self):
+        # int(3.9), int(True), and int("5") silently pass old checks.
+        # A verified schema requires unambiguous integer coverage counts.
+        for attempted, validated in ((5.5, 3), (True, 1), ("5", 3),
+                                     (5, "3"), (5, 2.9), (5, False)):
+            with self.subTest(attempted=attempted, validated=validated):
+                result = self.check({**VALID, "coverage": {
+                    "attempted": attempted, "validated": validated}})
+                self.assertEqual(result, "MISSED")
+
+    def test_oct29_green_but_delayed_no_recheck_is_missed(self):
+        # Observed 2026-10-29 KST GitHub schedule: started 08:18:15,
+        # completed 08:19:25; job log says 'no publication'.
+        # Published main remained the 07:28:33 historical EOD 'first'.
+        first = {**VALID, "phase": "first", "session_date": "20261029",
+                 "generated_at_utc": "2026-10-28T22:28:33Z",
+                 "candidates": [{**VALID["candidates"][0],
+                                 "last_trading_date": "2026-10-28"}]}
+        self.assertEqual(self.check(first,
+            verified_at="2026-10-28T23:19:22Z", built_this_run=False,
+            run_completed_at="2026-10-28T23:19:25Z"), "MISSED")
+        hypothetical = {**first, "phase": "recheck",
+                        "generated_at_utc": "2026-10-28T22:57:00Z"}
+        self.assertEqual(self.check(hypothetical,
+            verified_at="2026-10-28T22:58:00Z", built_this_run=True,
+            run_completed_at="2026-10-28T23:19:25Z"), "MISSED")
+
     def test_future_snapshot_fails_closed(self):
         self.assertEqual(self.check({**VALID, "generated_at_utc":"2026-10-22T22:59:00Z"}), "MISSED")
 
