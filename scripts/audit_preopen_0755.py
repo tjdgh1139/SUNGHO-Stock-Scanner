@@ -58,11 +58,12 @@ def audit_0755(snapshot, *, verified_at, built_this_run, run_completed_at=None):
     rows = snapshot.get("candidates")
     if not isinstance(coverage, dict) or not isinstance(rows, list):
         return "MISSED", "coverage or candidate evidence missing"
-    try:
-        attempted = int(coverage["attempted"])
-        validated = int(coverage["validated"])
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return "MISSED", "invalid validated coverage"
+    # Do not silently truncate floats or accept booleans/numeric text:
+    # the publisher schema requires actual integer evidence counts.
+    attempted = coverage.get("attempted")
+    validated = coverage.get("validated")
+    if type(attempted) is not int or type(validated) is not int:
+        return "MISSED", "coverage counts must be integers"
     if not (0 < validated <= attempted and 1 <= len(rows) <= min(5, validated)):
         return "MISSED", "no validated candidate publication"
     # EOD WATCH must never be certified as the session's authenticated LIVE BUY.
