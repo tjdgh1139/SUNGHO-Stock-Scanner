@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - atlas/preopen-0755-missed-audit-20261022
+      - atlas/audit-0755-hardening-20261023
   workflow_dispatch:
 
 permissions:

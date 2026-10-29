@@ -39,7 +39,7 @@ def audit_0755(snapshot, *, verified_at, built_this_run, run_completed_at=None):
     done_kst = finished.astimezone(KST)
     if not (now_kst.hour == 7 and 55 <= now_kst.minute <= 59):
         return "MISSED", "verification did not finish before 08:00 KST"
-    if done_kst.date() != now_kst.date() or not (done_kst.hour == 7 and 55 <= done_kst.minute <= 59):
+    if finished < now or done_kst.date() != now_kst.date() or not (done_kst.hour == 7 and 55 <= done_kst.minute <= 59):
         return "MISSED", "workflow completion did not occur before 08:00 KST"
     if built_this_run is not True:
         return "MISSED", "07:55 run did not generate a fresh recheck snapshot"
@@ -58,15 +58,36 @@ def audit_0755(snapshot, *, verified_at, built_this_run, run_completed_at=None):
     rows = snapshot.get("candidates")
     if not isinstance(coverage, dict) or not isinstance(rows, list):
         return "MISSED", "coverage or candidate evidence missing"
-    try:
-        attempted = int(coverage["attempted"])
-        validated = int(coverage["validated"])
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return "MISSED", "invalid validated coverage"
+    # Do not silently truncate floats or accept booleans/numeric text:
+    # the publisher schema requires actual integer evidence counts.
+    attempted = coverage.get("attempted")
+    validated = coverage.get("validated")
+    if type(attempted) is not int or type(validated) is not int:
+        return "MISSED", "coverage counts must be integers"
     if not (0 < validated <= attempted and 1 <= len(rows) <= min(5, validated)):
         return "MISSED", "no validated candidate publication"
-    if any(not isinstance(row, dict) or "NOT LIVE" not in str(row.get("source", "")) for row in rows):
-        return "MISSED", "candidate source evidence was not historical EOD"
+    # EOD WATCH must never be certified as the session's authenticated LIVE BUY.
+    seen_symbols = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            return "MISSED", "candidate evidence missing"
+        symbol = row.get("symbol")
+        if (not isinstance(symbol, str) or len(symbol) != 6 or
+                not symbol.isascii() or not symbol.isdigit() or symbol in seen_symbols):
+            return "MISSED", "candidate symbol missing, invalid, or duplicated"
+        seen_symbols.add(symbol)
+        source, status = row.get("source"), row.get("status")
+        if not isinstance(source, str) or "EOD" not in source or "NOT LIVE" not in source:
+            return "MISSED", "candidate source is not historical EOD"
+        if not isinstance(status, str) or not status.startswith("WATCH") or any(
+                claim in status.upper() for claim in ("BUY", "SELL")):
+            return "MISSED", "historical EOD candidate claims trading signal"
+        try:
+            last_date = datetime.strptime(row["last_trading_date"], "%Y-%m-%d").date()
+        except (KeyError, TypeError, ValueError):
+            return "MISSED", "historical EOD reference date invalid"
+        if not 1 <= (pub_kst.date() - last_date).days <= 5:
+            return "MISSED", "historical EOD reference date missing or stale"
     return "ON_TIME", "fresh EOD WATCH recheck published before 08:00 KST"
 
 
