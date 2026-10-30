@@ -1,0 +1,54 @@
+name: ATLAS unattended development audit
+on:
+  push:
+    branches:
+      - atlas/market-data-storage-staging
+    paths:
+      - '.github/workflows/atlas-unattended-dev-audit.yml'
+      - 'atlas_*.py'
+      - 'test_atlas_*.py'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 11 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-unattended-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run offline collector and safety regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v \
+            test_atlas_market_collection \
+            test_atlas_cycle_coordinator \
+            test_atlas_kis_health_cli \
+            test_atlas_request_pacer \
+            test_atlas_rate_limit_guard \
+            test_atlas_quote_quality_audit \
+            test_atlas_collection_quality_report \
+            test_atlas_receipt_gap_report \
+            test_atlas_collection_capacity \
+            test_atlas_quote_latency 2>&1 | tee atlas-audit-test-results.txt
+      - name: Publish audit output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-dev-audit
+          path: atlas-audit-test-results.txt
+          if-no-files-found: warn
+          retention-days: 14

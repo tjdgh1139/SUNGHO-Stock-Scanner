@@ -1,0 +1,72 @@
+import tempfile
+import unittest
+from unittest.mock import patch
+from pathlib import Path
+from atlas_cycle_coordinator import run_cycle
+from atlas_collector_heartbeat import latest_heartbeat
+
+class CoordinatorTests(unittest.TestCase):
+    def test_healthy_cycle(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result=run_cycle(str(Path(folder)/"db.sqlite"),["000660"],
+                lambda _: {"price":100},received_at_utc="2026-10-20T09:00:00Z")
+            self.assertEqual(result.health.state,"HEALTHY")
+            self.assertIsNone(result.retry)
+    def test_heartbeat_is_persisted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db=str(Path(folder)/'quotes.db')
+            health_db=str(Path(folder)/'health.db')
+            run_cycle(db,['000660'],lambda _: {'price':100},
+                      received_at_utc='2026-10-20T09:00:00Z',
+                      heartbeat_db_path=health_db,market='KRX',
+                      heartbeat_at_utc='2026-10-20T09:00:01Z')
+            heartbeat=latest_heartbeat(health_db,'KRX')
+            self.assertEqual(heartbeat['state'],'HEALTHY')
+            self.assertEqual(heartbeat['stored'],1)
+
+    def test_heartbeat_failure_never_reports_healthy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch('atlas_cycle_coordinator.save_heartbeat',side_effect=OSError('mock disk failure')):
+                outcome=run_cycle(str(Path(folder)/'quotes.db'),['000660'],
+                    lambda _: {'price':100},received_at_utc='2026-10-20T09:00:00Z',
+                    heartbeat_db_path=str(Path(folder)/'health.db'))
+            self.assertEqual(outcome.health.state,'HALTED')
+            self.assertEqual(outcome.health.reason,'HEARTBEAT_PERSISTENCE_FAILED')
+
+    def test_failed_provider_no_infinite_retry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def fail(_):
+                raise RuntimeError("mock failure")
+            result=run_cycle(str(Path(folder)/"db.sqlite"),["000660"],fail,
+                consecutive_failures=1,last_status_code=403)
+            self.assertEqual(result.health.state,"DEGRADED")
+            self.assertFalse(result.retry.retry)
+
+
+    def test_rate_limit_stops_cycle_and_persists_degraded_heartbeat(self):
+        class RateLimited(Exception):
+            pass
+        with tempfile.TemporaryDirectory() as folder:
+            calls=[]
+            def provider(symbol):
+                calls.append(symbol)
+                if symbol=="005930":
+                    raise RateLimited("mock limit")
+                return {"price":100,"volume":1,"turnover":100}
+            health_db=str(Path(folder)/"health.db")
+            result=run_cycle(str(Path(folder)/"quotes.db"),
+                ["000660","005930","009150"],provider,
+                received_at_utc="2026-10-20T01:00:00Z",
+                heartbeat_db_path=health_db,
+                heartbeat_at_utc="2026-10-20T01:00:01Z",
+                stop_on=(RateLimited,))
+            self.assertEqual(calls,["000660","005930"])
+            self.assertEqual(result.health.state,"DEGRADED")
+            self.assertEqual(result.health.reason,"UNIVERSE_COUNT_MISMATCH")
+            heartbeat=latest_heartbeat(health_db,"KRX")
+            self.assertEqual(heartbeat["state"],"DEGRADED")
+            self.assertEqual(heartbeat["attempted"],2)
+            self.assertEqual(heartbeat["stored"],1)
+
+if __name__=="__main__":
+    unittest.main()
