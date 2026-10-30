@@ -1,0 +1,23 @@
+name: ATLAS 0755 KST audit regression
+on:
+  push:
+    branches:
+      - atlas/preopen-0755-missed-audit-20261022
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preopen-audit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test fail-closed 07:55 audit without market access
+        run: python -m unittest -v test_atlas_preopen_0755_audit
