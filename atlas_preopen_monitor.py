@@ -118,7 +118,42 @@ def assess_candidate(candidate,quote,*,now=None,market="KR"):
     return result
 
 
-def minute_record(frozen,quotes,*,now=None):
+
+def _verified_krx_minute_receipts(quote, now):
+    """Require same-minute trade and fresh independent KRX WS channel receipts.
+
+    The caller must separately confirm its authenticated KIS WS connection.
+    HTTP response receipt times cannot substitute for exchange trades.
+    """
+    if not isinstance(quote, dict) or quote.get("quote_market") != "J":
+        return False
+    if quote.get("market_date") != now.astimezone(ZONE["KR"]).strftime("%Y%m%d"):
+        return False
+    channel_stamps = [_time(quote.get(key)) for key in
+                      ("trade_received_utc", "book_received_utc", "program_received_utc")]
+    if any(stamp is None or not 0 <= (now-stamp).total_seconds() <= 10
+           for stamp in channel_stamps):
+        return False
+    if _time(quote.get("quote_received_utc")) != channel_stamps[0]:
+        return False
+    now_kst = now.astimezone(ZONE["KR"])
+    local_minute = now_kst.replace(second=0, microsecond=0)
+    trade_minute = channel_stamps[0].astimezone(ZONE["KR"]).replace(second=0, microsecond=0)
+    if trade_minute != local_minute:
+        return False
+    # KIS trade packet contains the EXCHANGE execution time (HHMMSS).
+    # A newly received delayed/previous-minute trade is not a live observation.
+    hhmmss = quote.get("체결시간")
+    if not isinstance(hhmmss, str) or len(hhmmss) != 6 or not hhmmss.isascii() or not hhmmss.isdigit():
+        return False
+    hour, minute, second = int(hhmmss[:2]), int(hhmmss[2:4]), int(hhmmss[4:])
+    if hour > 23 or minute > 59 or second > 59:
+        return False
+    exchange_trade = now_kst.replace(hour=hour, minute=minute, second=second, microsecond=0)
+    exchange_age = (now_kst - exchange_trade).total_seconds()
+    return 0 <= exchange_age <= 10 and (hour, minute) == (now_kst.hour, now_kst.minute)
+
+def minute_record(frozen,quotes,*,now=None,ws_connected=False):
     now=now or datetime.now(timezone.utc)
     if not isinstance(frozen,dict) or frozen.get("market") not in ZONE:
         return None
@@ -132,7 +167,14 @@ def minute_record(frozen,quotes,*,now=None):
     rows=[]
     for candidate in frozen.get("candidates",[]):
         quote=quotes.get(candidate["symbol"])
-        assessment=assess_candidate(candidate,quote,now=now,market=market)
+        if market=="KR" and (not ws_connected or not _verified_krx_minute_receipts(quote,now)):
+            assessment={"status":"WAIT · 해당 분 KRX 체결/호가/프로그램 미검증",
+                        "price":None,"quote_age":None}
+        elif market=="US":
+            assessment={"status":"WAIT · 미국 거래소 체결 인증 미검증",
+                        "price":None,"quote_age":None}
+        else:
+            assessment=assess_candidate(candidate,quote,now=now,market=market)
         rows.append({**candidate,**assessment})
     return {"minute":minute,"market":market,"observed_at_utc":now.isoformat(),
             "rows":rows}
